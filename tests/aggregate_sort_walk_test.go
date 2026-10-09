@@ -39,11 +39,11 @@ func TestAggregate_SortWalk(t *testing.T) {
 		pipeline bson.A
 		support  harness.DumboDBSupport
 	}{
-		{"AscLimit", asc, bson.A{sortStage(asc), limit}, harness.DumboDBXFail},
-		{"DescLimit", asc, bson.A{sortStage(desc), limit}, harness.DumboDBXFail},
-		{"UnindexedMatch", asc, bson.A{match, sortStage(asc), limit}, harness.DumboDBXFail},
-		{"SortThenMatch", asc, bson.A{sortStage(asc), match, limit}, harness.DumboDBXFail},
-		{"NoIndexControl", nil, bson.A{sortStage(asc), limit}, harness.DumboDBXFail},
+		{"AscLimit", asc, bson.A{sortStage(asc), limit}, harness.DumboDBFull},
+		{"DescLimit", asc, bson.A{sortStage(desc), limit}, harness.DumboDBFull},
+		{"UnindexedMatch", asc, bson.A{match, sortStage(asc), limit}, harness.DumboDBFull},
+		{"SortThenMatch", asc, bson.A{sortStage(asc), match, limit}, harness.DumboDBFull},
+		{"NoIndexControl", nil, bson.A{sortStage(asc), limit}, harness.DumboDBFull},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			harness.PairTest(t, harness.TestCase{
