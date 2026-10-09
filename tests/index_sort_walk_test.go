@@ -106,7 +106,7 @@ func TestIndex_SortWalk(t *testing.T) {
 	}
 }
 
-func sortWalkOrderDocs(multikey, emptyArray bool) []interface{} {
+func sortWalkOrderDocs(multikey, emptyArray, nestedArrays bool) []interface{} {
 	d := func(id int32, k interface{}) bson.D {
 		doc := bson.D{{Key: "_id", Value: id}}
 		if k != nil {
@@ -134,6 +134,13 @@ func sortWalkOrderDocs(multikey, emptyArray bool) []interface{} {
 	if emptyArray {
 		docs = append(docs, d(15, bson.A{}))
 	}
+	if nestedArrays {
+		docs = append(docs,
+			d(16, bson.A{bson.A{int32(1), int32(2)}, int32(0)}),
+			d(17, bson.A{bson.A{int32(3)}}),
+			d(18, bson.A{int32(-5), bson.A{}}),
+		)
+	}
 	return docs
 }
 
@@ -142,22 +149,29 @@ func sortWalkOrderDocs(multikey, emptyArray bool) []interface{} {
 // minimum (ascending) or maximum (descending) element.
 func TestIndex_SortWalk_Order(t *testing.T) {
 	for _, data := range []struct {
-		name                 string
-		multikey, emptyArray bool
+		name                               string
+		multikey, emptyArray, nestedArrays bool
+		support                            harness.DumboDBSupport
 	}{
-		{"Scalars", false, false},
-		{"Multikey", true, false},
-		{"MultikeyEmptyArray", true, true},
+		{"Scalars", false, false, false, harness.DumboDBFull},
+		{"Multikey", true, false, false, harness.DumboDBFull},
+		{"MultikeyEmptyArray", true, true, false, harness.DumboDBFull},
+		{"MultikeyNestedArrays", true, true, true, harness.DumboDBXFail},
 	} {
 		for _, dir := range []int32{1, -1} {
 			for _, limit := range []int64{0, 4} {
 				name := fmt.Sprintf("%s_Dir%d_Limit%d", data.name, dir, limit)
+				support := data.support
+				if data.nestedArrays && dir == -1 && limit > 0 {
+					// The top four descending hold no empty array.
+					support = harness.DumboDBFull
+				}
 				t.Run(name, func(t *testing.T) {
 					harness.PairTest(t, harness.TestCase{
 						Name:    "Index_SortWalk_Order_" + name,
-						Support: harness.DumboDBFull,
+						Support: support,
 						Setup: func(ctx context.Context, col *mongo.Collection) error {
-							if _, err := col.InsertMany(ctx, sortWalkOrderDocs(data.multikey, data.emptyArray)); err != nil {
+							if _, err := col.InsertMany(ctx, sortWalkOrderDocs(data.multikey, data.emptyArray, data.nestedArrays)); err != nil {
 								return err
 							}
 							return createIndex(ctx, col, bson.D{{Key: "k", Value: 1}})
@@ -200,4 +214,78 @@ func TestIndex_SortWalk_Order(t *testing.T) {
 			}
 		}
 	}
+}
+
+// A multikey index holding array keys (from empty or nested arrays) still
+// drives the sort: MongoDB walks it with no SORT stage, placing an empty array
+// below every value and a nested array by array comparison.
+func TestIndex_SortWalk_ArrayKeys(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		sort    bson.D
+		support harness.DumboDBSupport
+	}{
+		{"Asc", bson.D{{Key: "k", Value: 1}}, harness.DumboDBXFail},
+		{"Desc", bson.D{{Key: "k", Value: -1}}, harness.DumboDBXFail},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			harness.PairTest(t, harness.TestCase{
+				Name:    "Index_SortWalk_ArrayKeys_" + tc.name,
+				Support: tc.support,
+				Setup: func(ctx context.Context, col *mongo.Collection) error {
+					docs := make([]interface{}, 0, sortWalkDocs+4)
+					for i := 0; i < sortWalkDocs; i++ {
+						docs = append(docs, bson.D{{Key: "_id", Value: int32(i)}, {Key: "k", Value: int32((i * 7) % sortWalkDocs)}})
+					}
+					docs = append(docs,
+						bson.D{{Key: "_id", Value: int32(1000)}, {Key: "k", Value: bson.A{}}},
+						bson.D{{Key: "_id", Value: int32(1001)}, {Key: "k", Value: bson.A{bson.A{int32(1), int32(2)}, int32(500)}}},
+						bson.D{{Key: "_id", Value: int32(1002)}, {Key: "k", Value: bson.A{bson.A{int32(3)}}}},
+						bson.D{{Key: "_id", Value: int32(1003)}, {Key: "k", Value: bson.A{int32(-5), bson.A{}}}},
+					)
+					if _, err := col.InsertMany(ctx, docs); err != nil {
+						return err
+					}
+					return createIndex(ctx, col, bson.D{{Key: "k", Value: 1}})
+				},
+				Run: func(ctx context.Context, col *mongo.Collection) (interface{}, error) {
+					cur, err := col.Find(ctx, bson.D{}, options.Find().SetSort(tc.sort).SetLimit(5))
+					if err != nil {
+						return nil, err
+					}
+					var docs []bson.D
+					if err := cur.All(ctx, &docs); err != nil {
+						return nil, err
+					}
+					ids := bson.A{}
+					for _, d := range docs {
+						ids = append(ids, d[0].Value)
+					}
+					explain, err := explainRunExplain(ctx, col, bson.D{
+						{Key: "find", Value: col.Name()},
+						{Key: "filter", Value: bson.D{}},
+						{Key: "sort", Value: tc.sort},
+						{Key: "limit", Value: int32(5)},
+					}, "executionStats")
+					if err != nil {
+						return nil, err
+					}
+					critical := explainExtractCritical(explain)
+					return bson.D{
+						{Key: "ids", Value: ids},
+						{Key: "winningPlan", Value: critical.Map()["winningPlan"]},
+						{Key: "docsExamined", Value: lookupStat(critical, "totalDocsExamined")},
+					}, nil
+				},
+			})
+		})
+	}
+}
+
+func lookupStat(critical bson.D, key string) interface{} {
+	stats, ok := critical.Map()["executionStats"].(bson.D)
+	if !ok {
+		return nil
+	}
+	return stats.Map()[key]
 }
