@@ -151,25 +151,19 @@ func TestIndex_SortWalk_Order(t *testing.T) {
 	for _, data := range []struct {
 		name                               string
 		multikey, emptyArray, nestedArrays bool
-		support                            harness.DumboDBSupport
 	}{
-		{"Scalars", false, false, false, harness.DumboDBFull},
-		{"Multikey", true, false, false, harness.DumboDBFull},
-		{"MultikeyEmptyArray", true, true, false, harness.DumboDBFull},
-		{"MultikeyNestedArrays", true, true, true, harness.DumboDBXFail},
+		{"Scalars", false, false, false},
+		{"Multikey", true, false, false},
+		{"MultikeyEmptyArray", true, true, false},
+		{"MultikeyNestedArrays", true, true, true},
 	} {
 		for _, dir := range []int32{1, -1} {
 			for _, limit := range []int64{0, 4} {
 				name := fmt.Sprintf("%s_Dir%d_Limit%d", data.name, dir, limit)
-				support := data.support
-				if data.nestedArrays && dir == -1 && limit > 0 {
-					// The top four descending hold no empty array.
-					support = harness.DumboDBFull
-				}
 				t.Run(name, func(t *testing.T) {
 					harness.PairTest(t, harness.TestCase{
 						Name:    "Index_SortWalk_Order_" + name,
-						Support: support,
+						Support: harness.DumboDBFull,
 						Setup: func(ctx context.Context, col *mongo.Collection) error {
 							if _, err := col.InsertMany(ctx, sortWalkOrderDocs(data.multikey, data.emptyArray, data.nestedArrays)); err != nil {
 								return err
@@ -225,8 +219,8 @@ func TestIndex_SortWalk_ArrayKeys(t *testing.T) {
 		sort    bson.D
 		support harness.DumboDBSupport
 	}{
-		{"Asc", bson.D{{Key: "k", Value: 1}}, harness.DumboDBXFail},
-		{"Desc", bson.D{{Key: "k", Value: -1}}, harness.DumboDBXFail},
+		{"Asc", bson.D{{Key: "k", Value: 1}}, harness.DumboDBFull},
+		{"Desc", bson.D{{Key: "k", Value: -1}}, harness.DumboDBFull},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			harness.PairTest(t, harness.TestCase{
