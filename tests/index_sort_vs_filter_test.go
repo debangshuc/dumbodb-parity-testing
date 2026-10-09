@@ -66,16 +66,16 @@ func TestIndex_SortVsFilter(t *testing.T) {
 		limit   int64
 		support harness.DumboDBSupport
 	}{
-		{"UnselectiveLimit", unselective, 1, 5, harness.DumboDBXFail},
-		{"UnselectiveDescLimit", unselective, -1, 5, harness.DumboDBXFail},
-		{"UnselectiveNoLimit", unselective, 1, 0, harness.DumboDBXFail},
+		{"UnselectiveLimit", unselective, 1, 5, harness.DumboDBFull},
+		{"UnselectiveDescLimit", unselective, -1, 5, harness.DumboDBFull},
+		{"UnselectiveNoLimit", unselective, 1, 0, harness.DumboDBFull},
 		{"SelectiveLimit", selective, 1, 5, harness.DumboDBFull},
 		{"SelectiveNoLimit", selective, 1, 0, harness.DumboDBFull},
-		{"Moderate300Limit", qBelow(100), 1, 5, harness.DumboDBXFail},
+		{"Moderate300Limit", qBelow(100), 1, 5, harness.DumboDBFull},
 		{"Moderate300NoLimit", qBelow(100), 1, 0, harness.DumboDBFull},
-		{"Narrow90Limit", qBelow(30), 1, 5, harness.DumboDBXFail},
-		{"Narrow150Limit", qBelow(50), 1, 5, harness.DumboDBXFail},
-		{"Wide1500NoLimit", qBelow(500), 1, 0, harness.DumboDBXFail},
+		{"Narrow90Limit", qBelow(30), 1, 5, harness.DumboDBFull},
+		{"Narrow150Limit", qBelow(50), 1, 5, harness.DumboDBFull},
+		{"Wide1500NoLimit", qBelow(500), 1, 0, harness.DumboDBFull},
 		{"EmptyLimit", bson.D{{Key: "q", Value: int32(-1)}}, 1, 5, harness.DumboDBFull},
 		{"TinyIn", bson.D{{Key: "q", Value: bson.D{{Key: "$in", Value: bson.A{int32(0), int32(1)}}}}}, 1, 5, harness.DumboDBFull},
 	} {
