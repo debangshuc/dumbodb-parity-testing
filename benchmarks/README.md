@@ -101,6 +101,7 @@ ascending and descending, on a dotted field, on a multikey index holding
 empty, nested, and multi-element arrays, and under an unindexed filter; sort
 without a limit across getMore batches;
 sort with limit on a compound index whose leading field is bound by equality;
+plan choice between a filter's index and the sort's, both outcomes;
 count; distinct; and unique inserts maintaining flat, dotted, and through-array
 indexes. DumboDB reports plan stages but no counts for count and distinct, so
 for those only the plan is checked and the timing carries the rest. A known

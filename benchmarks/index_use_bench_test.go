@@ -501,6 +501,30 @@ func BenchmarkIndexUse_SortNoLimit_10K(b *testing.B) {
 		bson.D{{Key: "k", Value: 1}}, 0, mustUseIndex)
 }
 
+// Plan choice between a filter's index and the sort's: with a limit, walking
+// the sort index wins when many documents pass the filter, and the filter's
+// index wins when few do. idx is the sort index on k; grpidx serves the filter.
+func benchmarkSortOrFilterIndex(b *testing.B, label string, filter bson.D, want string) {
+	col, ctx, dumbo := withIndexUseCollection(b, label, flatKey)
+	if _, err := col.Indexes().CreateOne(ctx, mongo.IndexModel{Keys: bson.D{{Key: "grp", Value: 1}}, Options: options.Index().SetName("grpidx")}); err != nil {
+		b.Fatalf("create grp index: %v", err)
+	}
+	sort := bson.D{{Key: "k", Value: 1}}
+	requireIndexUseOf(b, ctx, col, dumbo, findCmd(col, filter, sort, 10), want, indexUseDocs, mustUseIndex)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		runFind(b, ctx, col, filter, sort, 10)
+	}
+}
+
+func BenchmarkIndexUse_SortIndexBeatsUnselectiveFilter_10K(b *testing.B) {
+	benchmarkSortOrFilterIndex(b, "iu_sort_vs_filter_wide", bson.D{{Key: "grp", Value: bson.D{{Key: "$lt", Value: int32(400)}}}}, "idx")
+}
+
+func BenchmarkIndexUse_FilterIndexBeatsSort_10K(b *testing.B) {
+	benchmarkSortOrFilterIndex(b, "iu_sort_vs_filter_narrow", bson.D{{Key: "grp", Value: int32(7)}}, "grpidx")
+}
+
 // An equality on a compound index's leading field leaves the scan in order of
 // the next field, so a sort on it with a limit reads only the limit's
 // documents. Each bucket holds a fifth of the collection, so fetching every
