@@ -55,6 +55,11 @@ func indexUseDoc(i int) bson.D {
 
 func withIndexUseCollection(b *testing.B, label string, keys bson.D) (*mongo.Collection, context.Context, bool) {
 	b.Helper()
+	return withIndexUseCollectionOf(b, label, keys, indexUseDoc)
+}
+
+func withIndexUseCollectionOf(b *testing.B, label string, keys bson.D, docOf func(i int) bson.D) (*mongo.Collection, context.Context, bool) {
+	b.Helper()
 	ctx := context.Background()
 	client, err := connect(ctx)
 	if err != nil {
@@ -68,7 +73,7 @@ func withIndexUseCollection(b *testing.B, label string, keys bson.D) (*mongo.Col
 	const batch = 1000
 	buf := make([]interface{}, 0, batch)
 	for i := 0; i < indexUseDocs; i++ {
-		buf = append(buf, indexUseDoc(i))
+		buf = append(buf, docOf(i))
 		if len(buf) == batch || i == indexUseDocs-1 {
 			if _, err := col.InsertMany(ctx, buf, options.InsertMany().SetOrdered(false)); err != nil {
 				b.Fatalf("seed: %v", err)
@@ -316,6 +321,24 @@ func BenchmarkIndexUse_ThroughArrayEq_10K(b *testing.B) {
 func BenchmarkIndexUse_FlatSortLimit_10K(b *testing.B) {
 	benchmarkIndexedFind(b, "iu_flat_sort", flatKey, func(int) bson.D { return bson.D{} },
 		bson.D{{Key: "k", Value: 1}}, 10, mustUseIndex)
+}
+
+// An equality on a compound index's leading field leaves the scan in order of
+// the next field, so a sort on it with a limit reads only the limit's
+// documents. Each bucket holds a fifth of the collection, so fetching every
+// match and sorting fails the examined-documents check.
+func BenchmarkIndexUse_CompoundPrefixSortLimit_10K(b *testing.B) {
+	keys := bson.D{{Key: "bucket", Value: 1}, {Key: "k", Value: 1}}
+	col, ctx, dumbo := withIndexUseCollectionOf(b, "iu_cmp_prefix_sort", keys, func(i int) bson.D {
+		return append(indexUseDoc(i), bson.E{Key: "bucket", Value: int32(i % 5)})
+	})
+	filter := func(i int) bson.D { return bson.D{{Key: "bucket", Value: int32(i % 5)}} }
+	sort := bson.D{{Key: "k", Value: -1}}
+	requireIndexUse(b, ctx, col, dumbo, findCmd(col, filter(0), sort, 10), mustUseIndex)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		runFind(b, ctx, col, filter(i), sort, 10)
+	}
 }
 
 func benchmarkIndexedCount(b *testing.B, label string, keys bson.D, filter func(i int) bson.D) {

@@ -89,6 +89,7 @@ index and, for `find`, the documents examined stay under a tenth of the
 collection. The assertion runs against MongoDB as well, which validates it.
 Covered: flat equality, range, and `$in`; compound prefix and full; dotted,
 deep dotted, and through-array equality, range, and `$in`; sort with limit;
+sort with limit on a compound index whose leading field is bound by equality;
 count; distinct; and unique inserts maintaining flat, dotted, and through-array
 indexes. DumboDB reports plan stages but no counts for count and distinct, so
 for those only the plan is checked and the timing carries the rest. A known
