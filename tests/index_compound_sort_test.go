@@ -62,13 +62,13 @@ func TestIndex_CompoundEqualityPrefixSort(t *testing.T) {
 		limit   int64
 		support harness.DumboDBSupport
 	}{
-		{"AscLimit", ascIdx, eq, asc, 5, harness.DumboDBXFail},
-		{"DescLimit", ascIdx, eq, desc, 5, harness.DumboDBXFail},
-		{"DescIndexDescLimit", descIdx, eq, desc, 5, harness.DumboDBXFail},
-		{"DescIndexAscLimit", descIdx, eq, asc, 5, harness.DumboDBXFail},
+		{"AscLimit", ascIdx, eq, asc, 5, harness.DumboDBFull},
+		{"DescLimit", ascIdx, eq, desc, 5, harness.DumboDBFull},
+		{"DescIndexDescLimit", descIdx, eq, desc, 5, harness.DumboDBFull},
+		{"DescIndexAscLimit", descIdx, eq, asc, 5, harness.DumboDBFull},
 		{"AscNoLimit", ascIdx, eq, asc, 0, harness.DumboDBFull},
-		{"SortFieldRange", bson.D{{Key: "k", Value: 1}}, bson.D{{Key: "k", Value: bson.D{{Key: "$gte", Value: int32(100)}, {Key: "$lt", Value: int32(400)}}}}, desc, 5, harness.DumboDBXFail},
-		{"SortFieldIn", bson.D{{Key: "k", Value: 1}}, bson.D{{Key: "k", Value: bson.D{{Key: "$in", Value: bson.A{int32(500), int32(3), int32(70), int32(9)}}}}}, asc, 2, harness.DumboDBXFail},
+		{"SortFieldRange", bson.D{{Key: "k", Value: 1}}, bson.D{{Key: "k", Value: bson.D{{Key: "$gte", Value: int32(100)}, {Key: "$lt", Value: int32(400)}}}}, desc, 5, harness.DumboDBFull},
+		{"SortFieldIn", bson.D{{Key: "k", Value: 1}}, bson.D{{Key: "k", Value: bson.D{{Key: "$in", Value: bson.A{int32(500), int32(3), int32(70), int32(9)}}}}}, asc, 2, harness.DumboDBFull},
 		// MongoDB sorts the index keys before fetching; DumboDB cannot decode
 		// keys yet, so it fetches every candidate.
 		{"RangePrefixSorts", ascIdx, bson.D{{Key: "grp", Value: bson.D{{Key: "$gte", Value: int32(2)}}}}, asc, 5, harness.DumboDBXFail},
