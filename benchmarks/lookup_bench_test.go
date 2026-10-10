@@ -82,11 +82,12 @@ func assertJoinSizes(b *testing.B, ctx context.Context, orders *mongo.Collection
 }
 
 // requireForeignIndex fails b unless pipeline, run on orders, joins through
-// the foreign index idx. Unindexed variants pass an empty idx and skip it.
+// the foreign index idx. Unindexed variants pass an empty idx and skip it. The
+// documents examined span both collections, so only the plan is checked.
 func requireForeignIndex(b *testing.B, ctx context.Context, orders *mongo.Collection, pipeline bson.A, idx string) {
 	b.Helper()
 	if idx != "" {
-		requireIndexed(b, ctx, orders, aggregateCmd(orders, pipeline), idx, lookupOrders, lookupForeignIndexGap)
+		requireIndexed(b, ctx, orders, aggregateCmd(orders, pipeline), idx, 0, lookupForeignIndexGap)
 	}
 }
 

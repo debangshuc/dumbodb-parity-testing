@@ -206,7 +206,7 @@ var indexScanStages = []string{
 }
 
 // usesIndex reports whether s shows an index scan on idx and, when the command
-// reports document counts for a find, examined no more documents than it
+// reports document counts for a find or aggregate, examined no more documents than it
 // returned or a tenth of the collDocs-document collection, whichever is more.
 func (s explainSummary) usesIndex(idx string, collDocs int, checkExamined bool) (bool, string) {
 	scan := slices.ContainsFunc(s.stages, func(st string) bool { return slices.Contains(indexScanStages, st) })
@@ -228,14 +228,16 @@ func requireIndexUse(b *testing.B, ctx context.Context, col *mongo.Collection, d
 }
 
 // requireIndexUseOf fails b unless inner's plan, on a collection of collDocs
-// documents, uses the index named idx, honoring exp on DumboDB.
+// documents, uses the index named idx, honoring exp on DumboDB. A zero collDocs
+// checks the plan only.
 func requireIndexUseOf(b *testing.B, ctx context.Context, col *mongo.Collection, dumbo bool, inner bson.D, idx string, collDocs int, exp indexUseExpectation) {
 	b.Helper()
 	s, err := explainExecution(ctx, col, inner)
 	if err != nil {
 		b.Fatalf("explain %v: %v", inner, err)
 	}
-	ok, why := s.usesIndex(idx, collDocs, inner[0].Key == "find")
+	checkExamined := collDocs > 0 && (inner[0].Key == "find" || inner[0].Key == "aggregate")
+	ok, why := s.usesIndex(idx, collDocs, checkExamined)
 	b.ReportMetric(float64(s.docsExamined), "docs-examined")
 	switch {
 	case ok && dumbo && exp.knownDumboGap != "":

@@ -25,6 +25,8 @@ filter, `UpdateOne`, `UpdateMany`, `ReplaceOne`, `DeleteOne`, `DeleteMany`,
 `CountDocuments`, `Distinct`.
 
 **Aggregation**: `$match + $group`, `$sort + $limit`, `$project`.
+`Agg_Sort_10K[_Indexed]` repeats `$sort + $limit` on 10K documents, the indexed
+variant with an index on the sort field.
 
 **Projection** (in `projection_bench_test.go`): `Find_Projection` returns
 `{i, tag}` from the 1K small-doc set; `Find_Projection_10KB` and
