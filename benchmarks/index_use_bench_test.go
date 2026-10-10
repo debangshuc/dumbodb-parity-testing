@@ -238,7 +238,9 @@ func requireIndexUseOf(b *testing.B, ctx context.Context, col *mongo.Collection,
 	}
 	checkExamined := collDocs > 0 && (inner[0].Key == "find" || inner[0].Key == "aggregate")
 	ok, why := s.usesIndex(idx, collDocs, checkExamined)
-	b.ReportMetric(float64(s.docsExamined), "docs-examined")
+	if ok && collDocs > 0 && readCommands[inner[0].Key] {
+		ok, why = indexedReads(b, ctx, col, inner, collDocs)
+	}
 	switch {
 	case ok && dumbo && exp.knownDumboGap != "":
 		b.Fatalf("DumboDB now uses the index (%s); promote this benchmark to mustUseIndex", exp.knownDumboGap)
@@ -247,6 +249,93 @@ func requireIndexUseOf(b *testing.B, ctx context.Context, col *mongo.Collection,
 	case !ok:
 		b.Fatalf("index not used for %v: %s", inner, why)
 	}
+}
+
+var readCommands = map[string]bool{"find": true, "aggregate": true, "count": true, "distinct": true}
+
+// indexedReads runs inner and reports whether the server read every document
+// through an index key and, for a find, read no more documents than it
+// returned or a tenth of the collDocs-document collection, whichever is more.
+// Unlike explain, which plans separately, this measures the command itself.
+func indexedReads(b *testing.B, ctx context.Context, col *mongo.Collection, inner bson.D, collDocs int) (bool, string) {
+	b.Helper()
+	r, err := readsOf(ctx, col, inner)
+	if err != nil {
+		b.Fatalf("run %v: %v", inner, err)
+	}
+	switch {
+	case !r.tracked:
+		b.Logf("server reports no queryExecutor counters; reads unchecked")
+	case r.docs > r.keys:
+		return false, fmt.Sprintf("read %d docs but only %d index keys: some came from a collection scan", r.docs, r.keys)
+	case inner[0].Key == "find" && r.docs > max(r.returned, int64(collDocs/10)):
+		return false, fmt.Sprintf("read %d of %d docs for %d results", r.docs, collDocs, r.returned)
+	}
+	return true, ""
+}
+
+// reads is the work a command did by serverStatus metrics.queryExecutor: index
+// keys and documents read, and the documents it returned.
+type reads struct {
+	keys, docs, returned int64
+	tracked              bool
+}
+
+// readsOf runs the read command inner to completion twice, keeping the lesser
+// counts so background server work does not count. tracked is false when the
+// server has no such counters.
+func readsOf(ctx context.Context, col *mongo.Collection, inner bson.D) (reads, error) {
+	best := reads{keys: -1, docs: -1}
+	for range 2 {
+		k0, d0, tracked, err := scannedCounters(ctx, col)
+		if err != nil || !tracked {
+			return reads{}, err
+		}
+		returned, err := runToCompletion(ctx, col, inner)
+		if err != nil {
+			return reads{}, err
+		}
+		k1, d1, _, err := scannedCounters(ctx, col)
+		if err != nil {
+			return reads{}, err
+		}
+		if best.keys < 0 || k1-k0 < best.keys {
+			best.keys = k1 - k0
+		}
+		if best.docs < 0 || d1-d0 < best.docs {
+			best.docs = d1 - d0
+		}
+		best.returned = returned
+	}
+	best.tracked = true
+	return best, nil
+}
+
+func scannedCounters(ctx context.Context, col *mongo.Collection) (keys, docs int64, tracked bool, err error) {
+	var res bson.M
+	if err := col.Database().Client().Database("admin").RunCommand(ctx, bson.D{{Key: "serverStatus", Value: 1}}).Decode(&res); err != nil {
+		return 0, 0, false, err
+	}
+	metrics, _ := res["metrics"].(bson.M)
+	qe, _ := metrics["queryExecutor"].(bson.M)
+	keys, keysOK := asInt64(qe["scanned"])
+	docs, docsOK := asInt64(qe["scannedObjects"])
+	return keys, docs, keysOK && docsOK, nil
+}
+
+// runToCompletion runs cmd, draining any cursor, and returns the documents it
+// returned.
+func runToCompletion(ctx context.Context, col *mongo.Collection, cmd bson.D) (int64, error) {
+	if cmd[0].Key != "find" && cmd[0].Key != "aggregate" {
+		return 1, col.Database().RunCommand(ctx, cmd).Err()
+	}
+	cur, err := col.Database().RunCommandCursor(ctx, cmd)
+	if err != nil {
+		return 0, err
+	}
+	var docs []bson.Raw
+	err = cur.All(ctx, &docs)
+	return int64(len(docs)), err
 }
 
 func findCmd(col *mongo.Collection, filter, sort bson.D, limit int64) bson.D {

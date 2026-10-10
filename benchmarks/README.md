@@ -88,7 +88,13 @@ shows it. Each `IndexUse_*` benchmark seeds 10K documents and, before timing,
 runs the operation through `explain` (`executionStats`) and fails unless the
 winning plan has an index scan on the expected index and, for `find`, the
 documents examined stay within the results returned or a tenth of the
-collection, whichever is more. The assertion runs against MongoDB as well, which validates it.
+collection, whichever is more. Explain plans separately from the command, so
+for reads the benchmark then runs the command itself and reads the change in
+`serverStatus` `metrics.queryExecutor.scanned` and `scannedObjects`: every
+document must come through an index key, and a `find` must read no more
+documents than it returned or a tenth of the collection. A server without those
+counters skips this part. The assertion runs against MongoDB as well, which
+validates it.
 Covered: flat equality, range, and `$in`; compound prefix and full; dotted,
 deep dotted, and through-array equality, range, and `$in`; sort with limit;
 sort with limit on a compound index whose leading field is bound by equality;

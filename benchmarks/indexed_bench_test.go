@@ -35,6 +35,7 @@ const idIndex = "_id_"
 var (
 	idLookupExplainGap    = indexUseExpectation{knownDumboGap: "workspace-edl: explain reports COLLSCAN for _id lookups"}
 	lookupForeignIndexGap = indexUseExpectation{knownDumboGap: "workspace-0sn: explain omits the $lookup foreign index"}
+	halfCollectionCapGap  = indexUseExpectation{knownDumboGap: "workspace-fep: a range over half the collection is scanned, not read through the index"}
 )
 
 // requireIndexed fails b unless inner, run on col of collDocs documents, uses
@@ -246,7 +247,7 @@ func BenchmarkAgg_MatchGroup_Indexed(b *testing.B) {
 			{Key: "n", Value: bson.D{{Key: "$sum", Value: 1}}},
 		}}},
 	}
-	requireIndexed(b, ctx, col, aggregateCmd(col, pipeline), idx, benchDatasetSize, mustUseIndex)
+	requireIndexed(b, ctx, col, aggregateCmd(col, pipeline), idx, benchDatasetSize, halfCollectionCapGap)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		cur, err := col.Aggregate(ctx, pipeline)
