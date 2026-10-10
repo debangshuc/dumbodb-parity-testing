@@ -60,6 +60,13 @@ func withIndexUseCollection(b *testing.B, label string, keys bson.D) (*mongo.Col
 
 func withIndexUseCollectionOf(b *testing.B, label string, keys bson.D, docOf func(i int) bson.D) (*mongo.Collection, context.Context, bool) {
 	b.Helper()
+	return withIndexUseCollectionIndexed(b, label, options.Index(), keys, docOf)
+}
+
+// withIndexUseCollectionIndexed seeds docOf's documents and creates the index
+// "idx" on keys with opts.
+func withIndexUseCollectionIndexed(b *testing.B, label string, opts *options.IndexOptions, keys bson.D, docOf func(i int) bson.D) (*mongo.Collection, context.Context, bool) {
+	b.Helper()
 	ctx := context.Background()
 	client, err := connect(ctx)
 	if err != nil {
@@ -81,7 +88,7 @@ func withIndexUseCollectionOf(b *testing.B, label string, keys bson.D, docOf fun
 			buf = buf[:0]
 		}
 	}
-	if _, err := col.Indexes().CreateOne(ctx, mongo.IndexModel{Keys: keys, Options: options.Index().SetName("idx")}); err != nil {
+	if _, err := col.Indexes().CreateOne(ctx, mongo.IndexModel{Keys: keys, Options: opts.SetName("idx")}); err != nil {
 		b.Fatalf("create index %v: %v", keys, err)
 	}
 	return col, ctx, isDumboDB(ctx, client)
@@ -608,6 +615,75 @@ func BenchmarkIndexUse_HintByKeyPattern_10K(b *testing.B) {
 
 func BenchmarkIndexUse_HintNatural_10K(b *testing.B) {
 	benchmarkHintedFind(b, "iu_hint_natural", bson.D{{Key: "$natural", Value: 1}}, requireCollectionScan)
+}
+
+// Partial indexes on k, queried with a filter that implies the index's
+// condition on grp. filter(i) keeps k inside the index.
+func benchmarkPartialIndex(b *testing.B, label string, condition bson.D, filter func(i int) bson.D, exp indexUseExpectation) {
+	opts := options.Index().SetPartialFilterExpression(condition)
+	col, ctx, dumbo := withIndexUseCollectionIndexed(b, label, opts, flatKey, indexUseDoc)
+	requireIndexUse(b, ctx, col, dumbo, findCmd(col, filter(indexUseDocs/2), nil, 0), exp)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		runFind(b, ctx, col, filter(i), nil, 0)
+	}
+}
+
+// The index holds the tenth of documents with grp 7.
+func BenchmarkIndexUse_PartialEq_10K(b *testing.B) {
+	benchmarkPartialIndex(b, "iu_partial_eq", bson.D{{Key: "grp", Value: int32(7)}}, func(i int) bson.D {
+		return bson.D{{Key: "k", Value: int32((i%10)*1000 + 7)}, {Key: "grp", Value: int32(7)}}
+	}, mustUseIndex)
+}
+
+// The index holds the tenth of documents with grp < 100.
+func BenchmarkIndexUse_PartialRange_10K(b *testing.B) {
+	lt100 := bson.D{{Key: "$lt", Value: int32(100)}}
+	benchmarkPartialIndex(b, "iu_partial_range", bson.D{{Key: "grp", Value: lt100}}, func(i int) bson.D {
+		return bson.D{{Key: "k", Value: int32((i%10)*1000 + i%100)}, {Key: "grp", Value: lt100}}
+	}, indexUseExpectation{knownDumboGap: "workspace-rl6: range partial conditions are not recognized"})
+}
+
+// sparseDoc carries sp on one document in ten.
+func sparseDoc(i int) bson.D {
+	d := indexUseDoc(i)
+	if i%10 == 0 {
+		d = append(d, bson.E{Key: "sp", Value: int32(i)})
+	}
+	return d
+}
+
+var sparseKey = bson.D{{Key: "sp", Value: 1}}
+
+func BenchmarkIndexUse_SparseEq_10K(b *testing.B) {
+	col, ctx, dumbo := withIndexUseCollectionIndexed(b, "iu_sparse_eq", options.Index().SetSparse(true), sparseKey, sparseDoc)
+	filter := func(i int) bson.D { return bson.D{{Key: "sp", Value: int32(i - i%10)}} }
+	requireIndexUse(b, ctx, col, dumbo, findCmd(col, filter(indexUseDocs/2), nil, 0), mustUseIndex)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		runFind(b, ctx, col, filter(i%indexUseDocs), nil, 0)
+	}
+}
+
+// A hint onto a sparse index answers from its members alone, so an unindexed
+// filter reads only the tenth of documents the index holds.
+func BenchmarkIndexUse_HintedSparse_10K(b *testing.B) {
+	col, ctx, dumbo := withIndexUseCollectionIndexed(b, "iu_sparse_hint", options.Index().SetSparse(true), sparseKey, sparseDoc)
+	filter := bson.D{{Key: "pad", Value: bson.D{{Key: "$exists", Value: true}}}}
+	requireIndexUse(b, ctx, col, dumbo, append(findCmd(col, filter, nil, 0), bson.E{Key: "hint", Value: "idx"}),
+		indexUseExpectation{knownDumboGap: "workspace-vcv: a sparse hint scans the collection"})
+	opts := options.Find().SetHint("idx")
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		cur, err := col.Find(ctx, filter, opts)
+		if err != nil {
+			b.Fatalf("Find: %v", err)
+		}
+		var docs []bson.M
+		if err := cur.All(ctx, &docs); err != nil {
+			b.Fatalf("cursor.All: %v", err)
+		}
+	}
 }
 
 // An equality on a compound index's leading field leaves the scan in order of

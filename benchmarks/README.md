@@ -105,7 +105,9 @@ sort with limit on a compound index whose leading field is bound by equality;
 plan choice between a filter's index and the sort's, both outcomes;
 aggregation `$match`, `$sort + $limit`, `$match + $sort + $limit`, and
 `$match + $group`; a hint by index name and by key pattern overriding the
-planner's choice, and a `$natural` hint forcing a collection scan;
+planner's choice, and a `$natural` hint forcing a collection scan; partial
+indexes with equality and range conditions, a sparse index, and a hint onto a
+sparse index;
 count; distinct; and unique inserts maintaining flat, dotted, and through-array
 indexes. DumboDB reports plan stages but no counts for count and distinct, so
 for those only the plan is checked and the timing carries the rest. A known
