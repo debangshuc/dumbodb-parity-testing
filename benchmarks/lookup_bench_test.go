@@ -81,6 +81,15 @@ func assertJoinSizes(b *testing.B, ctx context.Context, orders *mongo.Collection
 	}
 }
 
+// requireForeignIndex fails b unless pipeline, run on orders, joins through
+// the foreign index idx. Unindexed variants pass an empty idx and skip it.
+func requireForeignIndex(b *testing.B, ctx context.Context, orders *mongo.Collection, pipeline bson.A, idx string) {
+	b.Helper()
+	if idx != "" {
+		requireIndexed(b, ctx, orders, aggregateCmd(orders, pipeline), idx, lookupOrders, lookupForeignIndexGap)
+	}
+}
+
 func benchmarkJoin(b *testing.B, ctx context.Context, orders *mongo.Collection, pipeline bson.A, field string, want int) {
 	assertJoinSizes(b, ctx, orders, pipeline, field, want)
 	b.ResetTimer()
@@ -102,10 +111,13 @@ func benchmarkLookupEquality(b *testing.B, n int, indexed bool) {
 		label += "_idx"
 	}
 	orders, foreign, ctx := withLookupCollections(b, label, n)
+	idx := ""
 	if indexed {
-		createIndex(b, ctx, foreign, bson.D{{Key: "i", Value: 1}})
+		idx = createIndex(b, ctx, foreign, bson.D{{Key: "i", Value: 1}})
 	}
-	benchmarkJoin(b, ctx, orders, bson.A{equalityLookup(foreign.Name())}, "joined", 1)
+	pipeline := bson.A{equalityLookup(foreign.Name())}
+	requireForeignIndex(b, ctx, orders, pipeline, idx)
+	benchmarkJoin(b, ctx, orders, pipeline, "joined", 1)
 }
 
 func BenchmarkLookup_Equality_1K(b *testing.B)          { benchmarkLookupEquality(b, 1000, false) }
@@ -122,8 +134,9 @@ func benchmarkLookupPipeline(b *testing.B, n int, indexed bool) {
 		label += "_idx"
 	}
 	orders, foreign, ctx := withLookupCollections(b, label, n)
+	idx := ""
 	if indexed {
-		createIndex(b, ctx, foreign, bson.D{{Key: "i", Value: 1}})
+		idx = createIndex(b, ctx, foreign, bson.D{{Key: "i", Value: 1}})
 	}
 	pipeline := bson.A{bson.D{{Key: "$lookup", Value: bson.D{
 		{Key: "from", Value: foreign.Name()},
@@ -133,6 +146,7 @@ func benchmarkLookupPipeline(b *testing.B, n int, indexed bool) {
 		}},
 		{Key: "as", Value: "joined"},
 	}}}}
+	requireForeignIndex(b, ctx, orders, pipeline, idx)
 	benchmarkJoin(b, ctx, orders, pipeline, "joined", 1)
 }
 
@@ -148,8 +162,9 @@ func benchmarkLookupNested(b *testing.B, n int, indexed bool) {
 		label += "_idx"
 	}
 	orders, foreign, ctx := withLookupCollections(b, label, n)
+	idx := ""
 	if indexed {
-		createIndex(b, ctx, foreign, bson.D{{Key: "i", Value: 1}})
+		idx = createIndex(b, ctx, foreign, bson.D{{Key: "i", Value: 1}})
 	}
 	pipeline := bson.A{bson.D{{Key: "$lookup", Value: bson.D{
 		{Key: "from", Value: foreign.Name()},
@@ -163,6 +178,7 @@ func benchmarkLookupNested(b *testing.B, n int, indexed bool) {
 		}},
 		{Key: "as", Value: "joined"},
 	}}}}
+	requireForeignIndex(b, ctx, orders, pipeline, idx)
 	benchmarkJoin(b, ctx, orders, pipeline, "joined", 1)
 }
 
@@ -178,6 +194,8 @@ func benchmarkGraphLookup(b *testing.B, n int, indexed bool) {
 		label += "_idx"
 	}
 	orders, foreign, ctx := withLookupCollections(b, label, n)
+	// MongoDB's explain does not report $graphLookup index use, so there is
+	// nothing to assert.
 	if indexed {
 		createIndex(b, ctx, foreign, bson.D{{Key: "i", Value: 1}})
 	}

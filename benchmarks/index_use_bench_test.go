@@ -111,6 +111,7 @@ var mustUseIndex = indexUseExpectation{}
 type explainSummary struct {
 	stages       []string
 	indexNames   []string
+	indexesUsed  []string
 	nReturned    int64
 	docsExamined int64
 	hasExecStats bool
@@ -158,44 +159,83 @@ func explainExecution(ctx context.Context, col *mongo.Collection, inner bson.D) 
 		return explainSummary{}, err
 	}
 	var out explainSummary
+	collectExplain(res, &out)
+	if stages, ok := res["stages"].(bson.A); ok {
+		for _, st := range stages {
+			stage, _ := st.(bson.M)
+			for _, body := range stage {
+				if m, ok := body.(bson.M); ok {
+					collectExplain(m, &out)
+				}
+			}
+			collectIndexesUsed(stage, &out)
+		}
+	}
+	return out, nil
+}
+
+// collectExplain reads the winning plan and execution counts from res, which
+// is an explain result or the $cursor stage of a classic aggregate explain.
+func collectExplain(res bson.M, out *explainSummary) {
 	if qp, ok := res["queryPlanner"].(bson.M); ok {
-		collectPlan(qp["winningPlan"], &out)
+		collectPlan(qp["winningPlan"], out)
 	}
 	if es, ok := res["executionStats"].(bson.M); ok {
 		n, nOK := asInt64(es["nReturned"])
 		d, dOK := asInt64(es["totalDocsExamined"])
 		out.nReturned, out.docsExamined, out.hasExecStats = n, d, nOK && dOK
 	}
-	return out, nil
+}
+
+// collectIndexesUsed records the indexes a classic $lookup stage reports for
+// its foreign side.
+func collectIndexesUsed(stage bson.M, out *explainSummary) {
+	used, _ := stage["indexesUsed"].(bson.A)
+	for _, u := range used {
+		if name, ok := u.(string); ok {
+			out.indexesUsed = append(out.indexesUsed, name)
+		}
+	}
+}
+
+// indexScanStages are the plan stages that read an index. MongoDB's EXPRESS
+// stages serve _id equality and EQ_LOOKUP a $lookup's foreign side.
+var indexScanStages = []string{
+	"IXSCAN", "COUNT_SCAN", "DISTINCT_SCAN",
+	"EXPRESS_IXSCAN", "EXPRESS_UPDATE", "EXPRESS_DELETE", "EQ_LOOKUP",
 }
 
 // usesIndex reports whether s shows an index scan on idx and, when the command
-// reports document counts for a find, examined at most a tenth of the
-// collection.
-func (s explainSummary) usesIndex(idx string, checkExamined bool) (bool, string) {
-	scan := false
-	for _, st := range s.stages {
-		if st == "IXSCAN" || st == "COUNT_SCAN" || st == "DISTINCT_SCAN" {
-			scan = true
-		}
-	}
-	if !scan || !slices.Contains(s.indexNames, idx) {
+// reports document counts for a find, examined no more documents than it
+// returned or a tenth of the collDocs-document collection, whichever is more.
+func (s explainSummary) usesIndex(idx string, collDocs int, checkExamined bool) (bool, string) {
+	scan := slices.ContainsFunc(s.stages, func(st string) bool { return slices.Contains(indexScanStages, st) })
+	if !(scan && slices.Contains(s.indexNames, idx)) && !slices.Contains(s.indexesUsed, idx) {
 		return false, fmt.Sprintf("plan %v on %v, want an index scan on %q", s.stages, s.indexNames, idx)
 	}
-	if checkExamined && s.hasExecStats && s.docsExamined*10 > indexUseDocs {
-		return false, fmt.Sprintf("examined %d of %d docs for %d results", s.docsExamined, indexUseDocs, s.nReturned)
+	allowed := max(s.nReturned, int64(collDocs/10))
+	if checkExamined && s.hasExecStats && s.docsExamined > allowed {
+		return false, fmt.Sprintf("examined %d of %d docs for %d results", s.docsExamined, collDocs, s.nReturned)
 	}
 	return true, ""
 }
 
-// requireIndexUse fails b unless inner's plan uses idx, honoring exp on DumboDB.
+// requireIndexUse fails b unless inner's plan uses the index-use fixture's
+// index, honoring exp on DumboDB.
 func requireIndexUse(b *testing.B, ctx context.Context, col *mongo.Collection, dumbo bool, inner bson.D, exp indexUseExpectation) {
+	b.Helper()
+	requireIndexUseOf(b, ctx, col, dumbo, inner, "idx", indexUseDocs, exp)
+}
+
+// requireIndexUseOf fails b unless inner's plan, on a collection of collDocs
+// documents, uses the index named idx, honoring exp on DumboDB.
+func requireIndexUseOf(b *testing.B, ctx context.Context, col *mongo.Collection, dumbo bool, inner bson.D, idx string, collDocs int, exp indexUseExpectation) {
 	b.Helper()
 	s, err := explainExecution(ctx, col, inner)
 	if err != nil {
 		b.Fatalf("explain %v: %v", inner, err)
 	}
-	ok, why := s.usesIndex("idx", inner[0].Key == "find")
+	ok, why := s.usesIndex(idx, collDocs, inner[0].Key == "find")
 	b.ReportMetric(float64(s.docsExamined), "docs-examined")
 	switch {
 	case ok && dumbo && exp.knownDumboGap != "":

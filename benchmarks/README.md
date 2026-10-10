@@ -84,9 +84,9 @@ traversal visits two documents. These are at `_10K` `[_Indexed]`.
 falls back to a collection scan still returns correct results, so only latency
 shows it. Each `IndexUse_*` benchmark seeds 10K documents and, before timing,
 runs the operation through `explain` (`executionStats`) and fails unless the
-winning plan has an `IXSCAN`, `COUNT_SCAN`, or `DISTINCT_SCAN` on the expected
-index and, for `find`, the documents examined stay under a tenth of the
-collection. The assertion runs against MongoDB as well, which validates it.
+winning plan has an index scan on the expected index and, for `find`, the
+documents examined stay within the results returned or a tenth of the
+collection, whichever is more. The assertion runs against MongoDB as well, which validates it.
 Covered: flat equality, range, and `$in`; compound prefix and full; dotted,
 deep dotted, and through-array equality, range, and `$in`; sort with limit;
 sort with limit on a compound index whose leading field is bound by equality;
@@ -96,6 +96,10 @@ for those only the plan is checked and the timing carries the rest. A known
 DumboDB gap is declared with its tracking issue: it is logged while it persists
 and fails the benchmark once DumboDB starts using the index, so the expectation
 gets promoted.
+
+The same check runs before timing every `*_Indexed` benchmark above, against
+the index that benchmark creates. Joins check the foreign index; `GraphLookup`
+is unchecked because MongoDB's explain does not report its index use.
 
 ## Scope - deferred
 

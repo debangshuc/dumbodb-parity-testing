@@ -48,7 +48,8 @@ func benchmarkFindFilterEqScaled(b *testing.B, n int) {
 
 func benchmarkFindFilterEqScaledIndexed(b *testing.B, n int) {
 	col, ctx := withSeededCollection(b, fmt.Sprintf("findeq_%d_idx", n), n, sizeSmall)
-	createIndex(b, ctx, col, bson.D{{Key: "grp", Value: 1}})
+	idx := createIndex(b, ctx, col, bson.D{{Key: "grp", Value: 1}})
+	requireIndexed(b, ctx, col, findCmd(col, bson.D{{Key: "grp", Value: 5}}, nil, 0), idx, n, mustUseIndex)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		cur, err := col.Find(ctx, bson.D{{Key: "grp", Value: i % 10}})
@@ -93,14 +94,13 @@ func benchmarkFindFilterRangeScaled(b *testing.B, n int) {
 
 func benchmarkFindFilterRangeScaledIndexed(b *testing.B, n int) {
 	col, ctx := withSeededCollection(b, fmt.Sprintf("findrange_%d_idx", n), n, sizeSmall)
-	createIndex(b, ctx, col, bson.D{{Key: "i", Value: 1}})
+	idx := createIndex(b, ctx, col, bson.D{{Key: "i", Value: 1}})
 	lo, hi := n/10, n/10+n/100
+	filter := bson.D{{Key: "i", Value: bson.D{{Key: "$gte", Value: lo}, {Key: "$lt", Value: hi}}}}
+	requireIndexed(b, ctx, col, findCmd(col, filter, nil, 0), idx, n, mustUseIndex)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		cur, err := col.Find(ctx, bson.D{{Key: "i", Value: bson.D{
-			{Key: "$gte", Value: lo},
-			{Key: "$lt", Value: hi},
-		}}})
+		cur, err := col.Find(ctx, filter)
 		if err != nil {
 			b.Fatalf("Find: %v", err)
 		}
@@ -135,7 +135,8 @@ func benchmarkUpdateManyScaled(b *testing.B, n int) {
 
 func benchmarkUpdateManyScaledIndexed(b *testing.B, n int) {
 	col, ctx := withSeededCollection(b, fmt.Sprintf("updatemany_%d_idx", n), n, sizeSmall)
-	createIndex(b, ctx, col, bson.D{{Key: "grp", Value: 1}})
+	idx := createIndex(b, ctx, col, bson.D{{Key: "grp", Value: 1}})
+	requireIndexed(b, ctx, col, updateCmd(col, bson.D{{Key: "grp", Value: 5}}, true), idx, n, mustUseIndex)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, err := col.UpdateMany(ctx,
@@ -181,7 +182,8 @@ func benchmarkDeleteManyScaled(b *testing.B, n int) {
 
 func benchmarkDeleteManyScaledIndexed(b *testing.B, n int) {
 	col, ctx := withSeededCollection(b, fmt.Sprintf("deletemany_%d_idx", n), n, sizeSmall)
-	createIndex(b, ctx, col, bson.D{{Key: "grp", Value: 1}})
+	idx := createIndex(b, ctx, col, bson.D{{Key: "grp", Value: 1}})
+	requireIndexed(b, ctx, col, deleteCmd(col, bson.D{{Key: "grp", Value: 5}}, 0), idx, n, mustUseIndex)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		grp := i % 10
@@ -221,7 +223,8 @@ func benchmarkCountDocumentsScaled(b *testing.B, n int) {
 
 func benchmarkCountDocumentsScaledIndexed(b *testing.B, n int) {
 	col, ctx := withSeededCollection(b, fmt.Sprintf("count_%d_idx", n), n, sizeSmall)
-	createIndex(b, ctx, col, bson.D{{Key: "grp", Value: 1}})
+	idx := createIndex(b, ctx, col, bson.D{{Key: "grp", Value: 1}})
+	requireIndexed(b, ctx, col, countDocumentsCmd(col, bson.D{{Key: "grp", Value: 5}}), idx, n, mustUseIndex)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if _, err := col.CountDocuments(ctx, bson.D{{Key: "grp", Value: 5}}); err != nil {
