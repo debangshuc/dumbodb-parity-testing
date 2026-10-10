@@ -109,7 +109,8 @@ planner's choice, and a `$natural` hint forcing a collection scan; partial
 indexes with equality and range conditions, a sparse index, and a hint onto a
 sparse index; a range and a sorted limit on a collated index under the same
 collation; ranges covering just under and just over half the collection;
-count; distinct; and unique inserts maintaining flat, dotted, and through-array
+count with equality, range, and dotted range; distinct, unfiltered and
+filtered on the distinct field or another indexed field; and unique inserts maintaining flat, dotted, and through-array
 indexes. DumboDB reports plan stages but no counts for count and distinct, so
 for those only the plan is checked and the timing carries the rest. A known
 DumboDB gap is declared with its tracking issue: it is logged while it persists

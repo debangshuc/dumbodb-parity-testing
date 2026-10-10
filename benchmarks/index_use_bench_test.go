@@ -834,15 +834,38 @@ func BenchmarkIndexUse_DottedCount_10K(b *testing.B) {
 }
 
 func benchmarkIndexedDistinct(b *testing.B, label string, keys bson.D, field string) {
+	benchmarkIndexedDistinctWhere(b, label, keys, field, bson.D{})
+}
+
+func benchmarkIndexedDistinctWhere(b *testing.B, label string, keys bson.D, field string, filter bson.D) {
 	col, ctx, dumbo := withIndexUseCollection(b, label, keys)
-	cmd := bson.D{{Key: "distinct", Value: col.Name()}, {Key: "key", Value: field}, {Key: "query", Value: bson.D{}}}
+	cmd := bson.D{{Key: "distinct", Value: col.Name()}, {Key: "key", Value: field}, {Key: "query", Value: filter}}
 	requireIndexUse(b, ctx, col, dumbo, cmd, mustUseIndex)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := col.Distinct(ctx, field, bson.D{}); err != nil {
+		if _, err := col.Distinct(ctx, field, filter); err != nil {
 			b.Fatalf("Distinct: %v", err)
 		}
 	}
+}
+
+func BenchmarkIndexUse_FlatCountRange_10K(b *testing.B) {
+	benchmarkIndexedCount(b, "iu_flat_count_range", flatKey, rangeOn("k", 50))
+}
+
+func BenchmarkIndexUse_DottedCountRange_10K(b *testing.B) {
+	benchmarkIndexedCount(b, "iu_dot_count_range", dottedKey, rangeOn("a.b", 50))
+}
+
+// Distinct values of the indexed field within a range of it.
+func BenchmarkIndexUse_DistinctFilteredOnKey_10K(b *testing.B) {
+	benchmarkIndexedDistinctWhere(b, "iu_distinct_on_key", bson.D{{Key: "grp", Value: 1}}, "grp",
+		bson.D{{Key: "grp", Value: bson.D{{Key: "$lt", Value: int32(100)}}}})
+}
+
+// Distinct values of another field, filtered through the index.
+func BenchmarkIndexUse_DistinctFilteredOnOther_10K(b *testing.B) {
+	benchmarkIndexedDistinctWhere(b, "iu_distinct_on_other", flatKey, "grp", rangeOn("k", 50)(5000))
 }
 
 func BenchmarkIndexUse_FlatDistinct_10K(b *testing.B) {
