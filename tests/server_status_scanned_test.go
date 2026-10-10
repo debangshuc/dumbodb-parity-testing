@@ -107,25 +107,25 @@ func TestServerStatus_QueryExecutorScanned(t *testing.T) {
 		repeatable bool
 		support    harness.DumboDBSupport
 	}{
-		{"CollectionScan", find(bson.D{{Key: "x", Value: 1}}, nil), true, harness.DumboDBXFail},
-		{"IndexEqualityOne", find(bson.D{{Key: "i", Value: int32(5)}}, nil), true, harness.DumboDBXFail},
-		{"IndexEqualityMany", find(bson.D{{Key: "grp", Value: int32(5)}}, nil), true, harness.DumboDBXFail},
-		{"IndexRange", find(bson.D{{Key: "i", Value: bson.D{{Key: "$gte", Value: int32(100)}, {Key: "$lt", Value: int32(200)}}}}, nil), true, harness.DumboDBXFail},
-		{"IndexSortLimit", find(bson.D{}, options.Find().SetSort(bson.D{{Key: "i", Value: -1}}).SetLimit(10)), true, harness.DumboDBXFail},
-		{"IDEquality", find(bson.D{{Key: "_id", Value: int32(5)}}, nil), true, harness.DumboDBXFail},
+		{"CollectionScan", find(bson.D{{Key: "x", Value: 1}}, nil), true, harness.DumboDBFull},
+		{"IndexEqualityOne", find(bson.D{{Key: "i", Value: int32(5)}}, nil), true, harness.DumboDBFull},
+		{"IndexEqualityMany", find(bson.D{{Key: "grp", Value: int32(5)}}, nil), true, harness.DumboDBFull},
+		{"IndexRange", find(bson.D{{Key: "i", Value: bson.D{{Key: "$gte", Value: int32(100)}, {Key: "$lt", Value: int32(200)}}}}, nil), true, harness.DumboDBFull},
+		{"IndexSortLimit", find(bson.D{}, options.Find().SetSort(bson.D{{Key: "i", Value: -1}}).SetLimit(10)), true, harness.DumboDBFull},
+		{"IDEquality", find(bson.D{{Key: "_id", Value: int32(5)}}, nil), true, harness.DumboDBFull},
 		{"IDMiss", find(bson.D{{Key: "_id", Value: int32(5000)}}, nil), true, harness.DumboDBFull},
 		{"IndexCount", func(ctx context.Context, col *mongo.Collection) error {
 			_, err := col.CountDocuments(ctx, bson.D{{Key: "grp", Value: int32(5)}})
 			return err
-		}, true, harness.DumboDBXFail},
+		}, true, harness.DumboDBFull},
 		{"IndexUpdateMany", func(ctx context.Context, col *mongo.Collection) error {
 			_, err := col.UpdateMany(ctx, bson.D{{Key: "grp", Value: int32(5)}}, bson.D{{Key: "$set", Value: bson.D{{Key: "t", Value: 1}}}})
 			return err
-		}, false, harness.DumboDBXFail},
+		}, false, harness.DumboDBFull},
 		{"IndexDeleteOne", func(ctx context.Context, col *mongo.Collection) error {
 			_, err := col.DeleteOne(ctx, bson.D{{Key: "i", Value: int32(7)}})
 			return err
-		}, false, harness.DumboDBXFail},
+		}, false, harness.DumboDBFull},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			harness.PairTest(t, harness.TestCase{
