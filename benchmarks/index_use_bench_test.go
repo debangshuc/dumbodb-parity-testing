@@ -1069,6 +1069,17 @@ func BenchmarkIndexUse_CompoundPrefixSortLimit_50K(b *testing.B) {
 		func(i int) bson.D { return bson.D{{Key: "bucket", Value: int32(i % 5)}} }, bson.D{{Key: "k", Value: -1}}, 10, mustUseIndex)
 }
 
+// A range on a compound index's leading field leaves the scan out of order for
+// the next, so the scanned keys are sorted before the fetch and a limit reads
+// only its documents. The range spans two buckets, two fifths of the
+// collection.
+func BenchmarkIndexUse_RangePrefixSortLimit_10K(b *testing.B) {
+	docOf := func(i int) bson.D { return append(indexUseDoc(i), bson.E{Key: "bucket", Value: int32(i % 5)}) }
+	benchmarkIndexedFindOf(b, "iu_range_prefix_sort", bson.D{{Key: "bucket", Value: 1}, {Key: "k", Value: 1}}, docOf,
+		func(int) bson.D { return bson.D{{Key: "bucket", Value: bson.D{{Key: "$gte", Value: int32(3)}}}} },
+		bson.D{{Key: "k", Value: 1}}, 10, mustUseIndex)
+}
+
 func benchmarkIndexedCount(b *testing.B, label string, keys bson.D, filter func(i int) bson.D) {
 	col, ctx, dumbo := withIndexUseCollection(b, label, keys)
 	cmd := func(i int) bson.D {

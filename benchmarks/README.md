@@ -103,7 +103,8 @@ deep dotted, and through-array equality, range, and `$in`; sort with limit,
 ascending and descending, on a dotted field, on a multikey index holding
 empty, nested, and multi-element arrays, and under an unindexed filter; sort
 without a limit across getMore batches;
-sort with limit on a compound index whose leading field is bound by equality;
+sort with limit on a compound index whose leading field is bound by equality,
+and by a range, where the keys are sorted before the fetch;
 plan choice between a filter's index and the sort's, both outcomes;
 aggregation `$match`, `$sort + $limit`, `$match + $sort + $limit`, and
 `$match + $group`; a hint by index name and by key pattern overriding the
