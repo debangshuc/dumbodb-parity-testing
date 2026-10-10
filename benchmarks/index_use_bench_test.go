@@ -369,7 +369,11 @@ func runFind(b *testing.B, ctx context.Context, col *mongo.Collection, filter, s
 
 // benchmarkIndexedFind times filter(i) after asserting filter(probe) uses the index.
 func benchmarkIndexedFind(b *testing.B, label string, keys bson.D, filter func(i int) bson.D, sort bson.D, limit int64, exp indexUseExpectation) {
-	col, ctx, dumbo := withIndexUseCollection(b, label, keys)
+	benchmarkIndexedFindOf(b, label, keys, indexUseDoc, filter, sort, limit, exp)
+}
+
+func benchmarkIndexedFindOf(b *testing.B, label string, keys bson.D, docOf func(i int) bson.D, filter func(i int) bson.D, sort bson.D, limit int64, exp indexUseExpectation) {
+	col, ctx, dumbo := withIndexUseCollectionOf(b, label, keys, docOf)
 	requireIndexUse(b, ctx, col, dumbo, findCmd(col, filter(indexUseDocs/2), sort, limit), exp)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -452,6 +456,49 @@ func BenchmarkIndexUse_ThroughArrayEq_10K(b *testing.B) {
 func BenchmarkIndexUse_FlatSortLimit_10K(b *testing.B) {
 	benchmarkIndexedFind(b, "iu_flat_sort", flatKey, func(int) bson.D { return bson.D{} },
 		bson.D{{Key: "k", Value: 1}}, 10, mustUseIndex)
+}
+
+func BenchmarkIndexUse_FlatSortDescLimit_10K(b *testing.B) {
+	benchmarkIndexedFind(b, "iu_flat_sort_desc", flatKey, func(int) bson.D { return bson.D{} },
+		bson.D{{Key: "k", Value: -1}}, 10, mustUseIndex)
+}
+
+func BenchmarkIndexUse_DottedSortLimit_10K(b *testing.B) {
+	benchmarkIndexedFind(b, "iu_dot_sort", dottedKey, func(int) bson.D { return bson.D{} },
+		bson.D{{Key: "a.b", Value: 1}}, 10, mustUseIndex)
+}
+
+// A multikey index whose keys include empty, nested, and multi-element arrays:
+// the sort reads the array-holding documents beside the walk.
+func BenchmarkIndexUse_MultikeySortLimit_10K(b *testing.B) {
+	docOf := func(i int) bson.D {
+		var m interface{} = int32(i)
+		switch i % 100 {
+		case 0:
+			m = bson.A{int32(i), int32(i + 5)}
+		case 1:
+			m = bson.A{}
+		case 2:
+			m = bson.A{bson.A{int32(i)}}
+		}
+		return append(indexUseDoc(i), bson.E{Key: "m", Value: m})
+	}
+	benchmarkIndexedFindOf(b, "iu_multikey_sort", bson.D{{Key: "m", Value: 1}}, docOf, func(int) bson.D { return bson.D{} },
+		bson.D{{Key: "m", Value: 1}}, 10, mustUseIndex)
+}
+
+// Half the documents pass the unindexed filter, so walking the sort index
+// reads about twice the limit.
+func BenchmarkIndexUse_SortLimitUnindexedFilter_10K(b *testing.B) {
+	benchmarkIndexedFind(b, "iu_sort_unidx_filter", flatKey, func(int) bson.D {
+		return bson.D{{Key: "grp", Value: bson.D{{Key: "$lt", Value: int32(500)}}}}
+	}, bson.D{{Key: "k", Value: 1}}, 10, mustUseIndex)
+}
+
+// Every document in index order, across getMore batches.
+func BenchmarkIndexUse_SortNoLimit_10K(b *testing.B) {
+	benchmarkIndexedFind(b, "iu_sort_nolimit", flatKey, func(int) bson.D { return bson.D{} },
+		bson.D{{Key: "k", Value: 1}}, 0, mustUseIndex)
 }
 
 // An equality on a compound index's leading field leaves the scan in order of

@@ -96,7 +96,10 @@ documents than it returned or a tenth of the collection. A server without those
 counters skips this part. The assertion runs against MongoDB as well, which
 validates it.
 Covered: flat equality, range, and `$in`; compound prefix and full; dotted,
-deep dotted, and through-array equality, range, and `$in`; sort with limit;
+deep dotted, and through-array equality, range, and `$in`; sort with limit,
+ascending and descending, on a dotted field, on a multikey index holding
+empty, nested, and multi-element arrays, and under an unindexed filter; sort
+without a limit across getMore batches;
 sort with limit on a compound index whose leading field is bound by equality;
 count; distinct; and unique inserts maintaining flat, dotted, and through-array
 indexes. DumboDB reports plan stages but no counts for count and distinct, so
