@@ -731,6 +731,17 @@ func BenchmarkIndexUse_CollatedSortLimit_10K(b *testing.B) {
 		bson.D{{Key: "s", Value: 1}}, 10, indexUseExpectation{knownDumboGap: "workspace-via: collated sorts never use the index"}, "")
 }
 
+// Ranges either side of half the collection: DumboDB's planner gives up on an
+// index whose range covers more than half, while MongoDB still uses it.
+func BenchmarkIndexUse_RangeUnderHalf_10K(b *testing.B) {
+	benchmarkIndexedFind(b, "iu_range_under_half", flatKey, func(int) bson.D { return rangeOn("k", 4500)(2000) }, nil, 0, mustUseIndex)
+}
+
+func BenchmarkIndexUse_RangeOverHalf_10K(b *testing.B) {
+	benchmarkIndexedFind(b, "iu_range_over_half", flatKey, func(int) bson.D { return rangeOn("k", 5500)(2000) }, nil, 0,
+		indexUseExpectation{knownDumboGap: "workspace-fep: a range over half the collection is scanned, not read through the index"})
+}
+
 // An equality on a compound index's leading field leaves the scan in order of
 // the next field, so a sort on it with a limit reads only the limit's
 // documents. Each bucket holds a fifth of the collection, so fetching every
