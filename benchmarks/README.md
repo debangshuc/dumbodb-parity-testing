@@ -108,7 +108,9 @@ aggregation `$match`, `$sort + $limit`, `$match + $sort + $limit`, and
 planner's choice, and a `$natural` hint forcing a collection scan; partial
 indexes with equality and range conditions, a sparse index, and a hint onto a
 sparse index; a range and a sorted limit on a collated index under the same
-collation; ranges covering just under and just over half the collection;
+collation; ranges covering just under and just over half the collection; `$or` across
+indexed fields; a projection covered by the index, which must read no
+documents; null equality; `$exists` on a sparse index; and an anchored regex;
 count with equality, range, and dotted range; distinct, unfiltered and
 filtered on the distinct field or another indexed field; and unique inserts maintaining flat, dotted, and through-array
 indexes. DumboDB reports plan stages but no counts for count and distinct, so

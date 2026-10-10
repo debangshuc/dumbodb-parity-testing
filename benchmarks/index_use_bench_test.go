@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
@@ -113,7 +114,14 @@ type indexUseExpectation struct {
 	knownDumboGap string
 }
 
-var mustUseIndex = indexUseExpectation{}
+var (
+	mustUseIndex         = indexUseExpectation{}
+	orUnionGap           = indexUseExpectation{knownDumboGap: "workspace-yhk: $or scans the collection"}
+	coveredProjectionGap = indexUseExpectation{knownDumboGap: "workspace-3u3: covered projections fetch documents"}
+	nullEqualityGap      = indexUseExpectation{knownDumboGap: "workspace-4cp: null equality is not indexed"}
+	existsGap            = indexUseExpectation{knownDumboGap: "workspace-qxg: $exists does not use a sparse index"}
+	regexPrefixGap       = indexUseExpectation{knownDumboGap: "workspace-286: regex prefixes are not indexed"}
+)
 
 type explainSummary struct {
 	stages       []string
@@ -740,6 +748,113 @@ func BenchmarkIndexUse_RangeUnderHalf_10K(b *testing.B) {
 func BenchmarkIndexUse_RangeOverHalf_10K(b *testing.B) {
 	benchmarkIndexedFind(b, "iu_range_over_half", flatKey, func(int) bson.D { return rangeOn("k", 5500)(2000) }, nil, 0,
 		indexUseExpectation{knownDumboGap: "workspace-fep: a range over half the collection is scanned, not read through the index"})
+}
+
+// $or with an indexed field in every branch: a union of index scans.
+func BenchmarkIndexUse_OrUnion_10K(b *testing.B) {
+	col, ctx, dumbo := withIndexUseCollection(b, "iu_or_union", flatKey)
+	if _, err := col.Indexes().CreateOne(ctx, mongo.IndexModel{Keys: bson.D{{Key: "grp", Value: 1}}, Options: options.Index().SetName("grpidx")}); err != nil {
+		b.Fatalf("create grp index: %v", err)
+	}
+	filter := func(i int) bson.D {
+		return bson.D{{Key: "$or", Value: bson.A{
+			bson.D{{Key: "k", Value: int32(i)}},
+			bson.D{{Key: "grp", Value: int32((i + 1) % 1000)}},
+		}}}
+	}
+	requireIndexUse(b, ctx, col, dumbo, findCmd(col, filter(indexUseDocs/2), nil, 0), orUnionGap)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		runFind(b, ctx, col, filter(i%indexUseDocs), nil, 0)
+	}
+}
+
+// A projection of only indexed fields is answered from index keys, reading no
+// documents.
+func BenchmarkIndexUse_CoveredProjection_10K(b *testing.B) {
+	col, ctx, dumbo := withIndexUseCollection(b, "iu_covered", flatKey)
+	projection := bson.D{{Key: "k", Value: 1}, {Key: "_id", Value: 0}}
+	inner := append(findCmd(col, rangeOn("k", 50)(indexUseDocs/2), nil, 0), bson.E{Key: "projection", Value: projection})
+	requireIndexUse(b, ctx, col, dumbo, inner, mustUseIndex)
+	requireNoDocsRead(b, ctx, col, dumbo, inner, coveredProjectionGap)
+	opts := options.Find().SetProjection(projection)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		cur, err := col.Find(ctx, rangeOn("k", 50)(i%indexUseDocs), opts)
+		if err != nil {
+			b.Fatalf("Find: %v", err)
+		}
+		var docs []bson.M
+		if err := cur.All(ctx, &docs); err != nil {
+			b.Fatalf("cursor.All: %v", err)
+		}
+	}
+}
+
+// requireNoDocsRead fails b unless running inner reads no documents, honoring
+// exp on DumboDB.
+func requireNoDocsRead(b *testing.B, ctx context.Context, col *mongo.Collection, dumbo bool, inner bson.D, exp indexUseExpectation) {
+	b.Helper()
+	r, err := readsOf(ctx, col, inner)
+	if err != nil {
+		b.Fatalf("run %v: %v", inner, err)
+	}
+	if !r.tracked {
+		b.Logf("server reports no queryExecutor counters; reads unchecked")
+		return
+	}
+	ok := r.docs == 0
+	switch {
+	case ok && dumbo && exp.knownDumboGap != "":
+		b.Fatalf("DumboDB now reads no documents (%s); promote this benchmark", exp.knownDumboGap)
+	case !ok && dumbo && exp.knownDumboGap != "":
+		b.Logf("known DumboDB gap (%s): read %d docs", exp.knownDumboGap, r.docs)
+	case !ok:
+		b.Fatalf("%v read %d docs, want none", inner, r.docs)
+	}
+}
+
+// nullableDoc sets n to null on one document in ten, and s to "s<i>".
+func nullableDoc(i int) bson.D {
+	var n interface{} = int32(i)
+	if i%10 == 0 {
+		n = nil
+	}
+	return append(indexUseDoc(i), bson.E{Key: "n", Value: n}, bson.E{Key: "s", Value: fmt.Sprintf("s%05d", i)})
+}
+
+func BenchmarkIndexUse_NullEq_10K(b *testing.B) {
+	col, ctx, dumbo := withIndexUseCollectionIndexed(b, "iu_null_eq", options.Index(), bson.D{{Key: "n", Value: 1}}, nullableDoc)
+	filter := bson.D{{Key: "n", Value: nil}}
+	requireIndexUse(b, ctx, col, dumbo, findCmd(col, filter, nil, 0), nullEqualityGap)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		runFind(b, ctx, col, filter, nil, 0)
+	}
+}
+
+// $exists: true on a sparse index reads only its members.
+func BenchmarkIndexUse_ExistsSparse_10K(b *testing.B) {
+	col, ctx, dumbo := withIndexUseCollectionIndexed(b, "iu_exists_sparse", options.Index().SetSparse(true), sparseKey, sparseDoc)
+	filter := bson.D{{Key: "sp", Value: bson.D{{Key: "$exists", Value: true}}}}
+	requireIndexUse(b, ctx, col, dumbo, findCmd(col, filter, nil, 0), existsGap)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		runFind(b, ctx, col, filter, nil, 0)
+	}
+}
+
+// An anchored regex is a range of the index.
+func BenchmarkIndexUse_RegexPrefix_10K(b *testing.B) {
+	col, ctx, dumbo := withIndexUseCollectionIndexed(b, "iu_regex_prefix", options.Index(), bson.D{{Key: "s", Value: 1}}, nullableDoc)
+	filter := func(i int) bson.D {
+		return bson.D{{Key: "s", Value: primitive.Regex{Pattern: fmt.Sprintf("^s%03d", i%100)}}}
+	}
+	requireIndexUse(b, ctx, col, dumbo, findCmd(col, filter(50), nil, 0), regexPrefixGap)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		runFind(b, ctx, col, filter(i), nil, 0)
+	}
 }
 
 // An equality on a compound index's leading field leaves the scan in order of
