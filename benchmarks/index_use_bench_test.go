@@ -926,6 +926,91 @@ func BenchmarkIndexUse_AggMatchGroup_10K(b *testing.B) {
 	})
 }
 
+// requireIndexedWrite fails b unless the write inner plans on idx and, run
+// once, reads every document it touches through an index key and no more than
+// a tenth of the collection.
+func requireIndexedWrite(b *testing.B, ctx context.Context, col *mongo.Collection, dumbo bool, inner bson.D) {
+	b.Helper()
+	requireIndexUseOf(b, ctx, col, dumbo, inner, "idx", 0, mustUseIndex)
+	k0, d0, tracked, err := scannedCounters(ctx, col)
+	if err != nil {
+		b.Fatalf("serverStatus: %v", err)
+	}
+	if err := col.Database().RunCommand(ctx, inner).Err(); err != nil {
+		b.Fatalf("run %v: %v", inner, err)
+	}
+	k1, d1, _, err := scannedCounters(ctx, col)
+	if err != nil {
+		b.Fatalf("serverStatus: %v", err)
+	}
+	if !tracked {
+		b.Logf("server reports no queryExecutor counters; reads unchecked")
+		return
+	}
+	if keys, docs := k1-k0, d1-d0; docs > keys || docs > indexUseDocs/10 {
+		b.Fatalf("%v read %d docs through %d index keys", inner, docs, keys)
+	}
+}
+
+func setTouched(i int) bson.D {
+	return bson.D{{Key: "$set", Value: bson.D{{Key: "touched", Value: int32(i)}}}}
+}
+
+func BenchmarkIndexUse_UpdateOneByIndex_10K(b *testing.B) {
+	col, ctx, dumbo := withIndexUseCollection(b, "iu_update_one", flatKey)
+	requireIndexedWrite(b, ctx, col, dumbo, bson.D{{Key: "update", Value: col.Name()}, {Key: "updates", Value: bson.A{
+		bson.D{{Key: "q", Value: eqOn("k")(indexUseDocs / 2)}, {Key: "u", Value: setTouched(0)}},
+	}}})
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := col.UpdateOne(ctx, eqOn("k")(i%indexUseDocs), setTouched(i)); err != nil {
+			b.Fatalf("UpdateOne: %v", err)
+		}
+	}
+}
+
+func BenchmarkIndexUse_DeleteOneByIndex_10K(b *testing.B) {
+	col, ctx, dumbo := withIndexUseCollection(b, "iu_delete_one", flatKey)
+	requireIndexedWrite(b, ctx, col, dumbo, bson.D{{Key: "delete", Value: col.Name()}, {Key: "deletes", Value: bson.A{
+		bson.D{{Key: "q", Value: eqOn("k")(indexUseDocs / 2)}, {Key: "limit", Value: 1}},
+	}}})
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := col.DeleteOne(ctx, eqOn("k")(i%indexUseDocs)); err != nil {
+			b.Fatalf("DeleteOne: %v", err)
+		}
+	}
+}
+
+func BenchmarkIndexUse_FindAndModifyByIndex_10K(b *testing.B) {
+	col, ctx, dumbo := withIndexUseCollection(b, "iu_find_and_modify", flatKey)
+	requireIndexedWrite(b, ctx, col, dumbo, bson.D{
+		{Key: "findAndModify", Value: col.Name()}, {Key: "query", Value: eqOn("k")(indexUseDocs / 2)}, {Key: "update", Value: setTouched(0)},
+	})
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := col.FindOneAndUpdate(ctx, eqOn("k")(i%indexUseDocs), setTouched(i)).Err(); err != nil {
+			b.Fatalf("FindOneAndUpdate: %v", err)
+		}
+	}
+}
+
+// Upserts of new keys against a unique index: each matches nothing and
+// inserts, so the index is probed for the match and again for uniqueness.
+func BenchmarkIndexUse_UpsertUnique_10K(b *testing.B) {
+	col, ctx, dumbo := withIndexUseCollectionIndexed(b, "iu_upsert_unique", options.Index().SetUnique(true), flatKey, indexUseDoc)
+	requireIndexedWrite(b, ctx, col, dumbo, bson.D{{Key: "update", Value: col.Name()}, {Key: "updates", Value: bson.A{
+		bson.D{{Key: "q", Value: eqOn("k")(indexUseDocs * 2)}, {Key: "u", Value: setTouched(0)}, {Key: "upsert", Value: true}},
+	}}})
+	opts := options.Update().SetUpsert(true)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := col.UpdateOne(ctx, eqOn("k")(indexUseDocs*3+i), setTouched(i), opts); err != nil {
+			b.Fatalf("UpdateOne upsert: %v", err)
+		}
+	}
+}
+
 func benchmarkIndexedCount(b *testing.B, label string, keys bson.D, filter func(i int) bson.D) {
 	col, ctx, dumbo := withIndexUseCollection(b, label, keys)
 	cmd := func(i int) bson.D {

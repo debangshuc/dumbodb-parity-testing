@@ -110,7 +110,9 @@ indexes with equality and range conditions, a sparse index, and a hint onto a
 sparse index; a range and a sorted limit on a collated index under the same
 collation; ranges covering just under and just over half the collection; `$or` across
 indexed fields; a projection covered by the index, which must read no
-documents; null equality; `$exists` on a sparse index; and an anchored regex;
+documents; null equality; `$exists` on a sparse index; an anchored regex;
+updateOne, deleteOne, and findAndModify filtered on an index, and upserts
+against a unique index, each run once before timing to check its reads;
 count with equality, range, and dotted range; distinct, unfiltered and
 filtered on the distinct field or another indexed field; and unique inserts maintaining flat, dotted, and through-array
 indexes. DumboDB reports plan stages but no counts for count and distinct, so
