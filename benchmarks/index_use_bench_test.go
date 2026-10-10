@@ -1100,6 +1100,63 @@ func benchmarkIndexedInsert(b *testing.B, label string, keys bson.D, unique bool
 	}
 }
 
+func BenchmarkIndexUse_InsertMultikey(b *testing.B) {
+	benchmarkIndexedInsert(b, "iu_ins_multikey", skuKey, false)
+}
+
+// Updates moving each document's value within the index, by _id so the write
+// itself needs no secondary index. Afterwards the last moved value must be
+// found through the index.
+func benchmarkIndexedValueUpdate(b *testing.B, label string, keys bson.D, field string) {
+	col, ctx, _ := withIndexUseCollection(b, label, keys)
+	moved := func(i int) int32 { return int32(indexUseDocs + i) }
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		id := bson.D{{Key: "_id", Value: int32(i % indexUseDocs)}}
+		if _, err := col.UpdateOne(ctx, id, bson.D{{Key: "$set", Value: bson.D{{Key: field, Value: moved(i)}}}}); err != nil {
+			b.Fatalf("UpdateOne: %v", err)
+		}
+	}
+	b.StopTimer()
+	requireIndexedCount(b, ctx, col, bson.D{{Key: field, Value: moved(b.N - 1)}}, 1)
+}
+
+// requireIndexedCount fails b unless filter, read through the index, matches
+// want documents.
+func requireIndexedCount(b *testing.B, ctx context.Context, col *mongo.Collection, filter bson.D, want int64) {
+	b.Helper()
+	n, err := col.CountDocuments(ctx, filter, options.Count().SetHint("idx"))
+	if err != nil {
+		b.Fatalf("count %v: %v", filter, err)
+	}
+	if n != want {
+		b.Fatalf("index finds %d documents for %v, want %d", n, filter, want)
+	}
+}
+
+func BenchmarkIndexUse_UpdateIndexedFlat_10K(b *testing.B) {
+	benchmarkIndexedValueUpdate(b, "iu_upd_flat", flatKey, "k")
+}
+
+func BenchmarkIndexUse_UpdateIndexedDotted_10K(b *testing.B) {
+	benchmarkIndexedValueUpdate(b, "iu_upd_dot", dottedKey, "a.b")
+}
+
+// Deletes by _id remove each document's entries from a through-array index.
+// Past indexUseDocs iterations the deletes find nothing.
+func BenchmarkIndexUse_DeleteIndexed_10K(b *testing.B) {
+	col, ctx, _ := withIndexUseCollection(b, "iu_del_idx", skuKey)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := col.DeleteOne(ctx, bson.D{{Key: "_id", Value: int32(i % indexUseDocs)}}); err != nil {
+			b.Fatalf("DeleteOne: %v", err)
+		}
+	}
+	b.StopTimer()
+	last := min(b.N, indexUseDocs) - 1
+	requireIndexedCount(b, ctx, col, bson.D{{Key: "items.sku", Value: fmt.Sprintf("sku-%d-1", last)}}, 0)
+}
+
 func BenchmarkIndexUse_InsertUniqueFlat(b *testing.B) {
 	benchmarkIndexedInsert(b, "iu_ins_flat", flatKey, true)
 }

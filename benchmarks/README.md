@@ -114,9 +114,10 @@ documents; null equality; `$exists` on a sparse index; an anchored regex;
 updateOne, deleteOne, and findAndModify filtered on an index, and upserts
 against a unique index, each run once before timing to check its reads;
 count with equality, range, and dotted range; distinct, unfiltered and
-filtered on the distinct field or another indexed field; and unique inserts maintaining flat, dotted, and through-array
-indexes. DumboDB reports plan stages but no counts for count and distinct, so
-for those only the plan is checked and the timing carries the rest. A known
+filtered on the distinct field or another indexed field; unique inserts maintaining flat, dotted, and through-array indexes;
+non-unique multikey inserts; updates moving a flat or dotted indexed value;
+and deletes removing through-array index entries, each followed by an
+index-only count proving the index reflects the change. A known
 DumboDB gap is declared with its tracking issue: it is logged while it persists
 and fails the benchmark once DumboDB starts using the index, so the expectation
 gets promoted.
