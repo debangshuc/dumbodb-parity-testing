@@ -550,6 +550,66 @@ func BenchmarkIndexUse_FilterIndexBeatsSort_10K(b *testing.B) {
 	benchmarkSortOrFilterIndex(b, "iu_sort_vs_filter_narrow", bson.D{{Key: "grp", Value: int32(7)}}, "grpidx")
 }
 
+// Hints: the filter binds both k (unique, idx) and grp (grpidx), so the
+// planner alone would pick idx; the hint must force grpidx.
+func benchmarkHintedFind(b *testing.B, label string, hint interface{}, check func(*testing.B, context.Context, *mongo.Collection, bool, bson.D)) {
+	col, ctx, dumbo := withIndexUseCollection(b, label, flatKey)
+	if _, err := col.Indexes().CreateOne(ctx, mongo.IndexModel{Keys: bson.D{{Key: "grp", Value: 1}}, Options: options.Index().SetName("grpidx")}); err != nil {
+		b.Fatalf("create grp index: %v", err)
+	}
+	filter := func(i int) bson.D { return bson.D{{Key: "k", Value: int32(i)}, {Key: "grp", Value: int32(i % 1000)}} }
+	check(b, ctx, col, dumbo, append(findCmd(col, filter(indexUseDocs/2), nil, 0), bson.E{Key: "hint", Value: hint}))
+	opts := options.Find().SetHint(hint)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		cur, err := col.Find(ctx, filter(i%indexUseDocs), opts)
+		if err != nil {
+			b.Fatalf("Find: %v", err)
+		}
+		var docs []bson.M
+		if err := cur.All(ctx, &docs); err != nil {
+			b.Fatalf("cursor.All: %v", err)
+		}
+	}
+}
+
+func requireGrpIndex(b *testing.B, ctx context.Context, col *mongo.Collection, dumbo bool, inner bson.D) {
+	b.Helper()
+	requireIndexUseOf(b, ctx, col, dumbo, inner, "grpidx", indexUseDocs, mustUseIndex)
+}
+
+// requireCollectionScan fails b unless inner's plan is a collection scan that
+// reads no index keys.
+func requireCollectionScan(b *testing.B, ctx context.Context, col *mongo.Collection, _ bool, inner bson.D) {
+	b.Helper()
+	s, err := explainExecution(ctx, col, inner)
+	if err != nil {
+		b.Fatalf("explain %v: %v", inner, err)
+	}
+	if !slices.Contains(s.stages, "COLLSCAN") || len(s.indexNames) > 0 {
+		b.Fatalf("plan %v on %v, want a collection scan", s.stages, s.indexNames)
+	}
+	r, err := readsOf(ctx, col, inner)
+	if err != nil {
+		b.Fatalf("run %v: %v", inner, err)
+	}
+	if r.tracked && r.keys > 0 {
+		b.Fatalf("%v read %d index keys, want none", inner, r.keys)
+	}
+}
+
+func BenchmarkIndexUse_HintByName_10K(b *testing.B) {
+	benchmarkHintedFind(b, "iu_hint_name", "grpidx", requireGrpIndex)
+}
+
+func BenchmarkIndexUse_HintByKeyPattern_10K(b *testing.B) {
+	benchmarkHintedFind(b, "iu_hint_keys", bson.D{{Key: "grp", Value: 1}}, requireGrpIndex)
+}
+
+func BenchmarkIndexUse_HintNatural_10K(b *testing.B) {
+	benchmarkHintedFind(b, "iu_hint_natural", bson.D{{Key: "$natural", Value: 1}}, requireCollectionScan)
+}
+
 // An equality on a compound index's leading field leaves the scan in order of
 // the next field, so a sort on it with a limit reads only the limit's
 // documents. Each bucket holds a fifth of the collection, so fetching every
