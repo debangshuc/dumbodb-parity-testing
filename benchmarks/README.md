@@ -91,8 +91,9 @@ documents examined stay within the results returned or a tenth of the
 collection, whichever is more. Explain plans separately from the command, so
 for reads the benchmark then runs the command itself and reads the change in
 `serverStatus` `metrics.queryExecutor.scanned` and `scannedObjects`: every
-document must come through an index key, and a `find` must read no more
-documents than it returned or a tenth of the collection. A server without those
+document must come through an index key, and a `find`, or a pipeline of only
+`$match`, `$sort`, and `$limit`, must read no more documents than it returned
+or a tenth of the collection. A server without those
 counters skips this part. The assertion runs against MongoDB as well, which
 validates it.
 Covered: flat equality, range, and `$in`; compound prefix and full; dotted,
@@ -102,6 +103,8 @@ empty, nested, and multi-element arrays, and under an unindexed filter; sort
 without a limit across getMore batches;
 sort with limit on a compound index whose leading field is bound by equality;
 plan choice between a filter's index and the sort's, both outcomes;
+aggregation `$match`, `$sort + $limit`, `$match + $sort + $limit`, and
+`$match + $group`;
 count; distinct; and unique inserts maintaining flat, dotted, and through-array
 indexes. DumboDB reports plan stages but no counts for count and distinct, so
 for those only the plan is checked and the timing carries the rest. A known

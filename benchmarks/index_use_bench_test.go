@@ -254,8 +254,9 @@ func requireIndexUseOf(b *testing.B, ctx context.Context, col *mongo.Collection,
 var readCommands = map[string]bool{"find": true, "aggregate": true, "count": true, "distinct": true}
 
 // indexedReads runs inner and reports whether the server read every document
-// through an index key and, for a find, read no more documents than it
-// returned or a tenth of the collDocs-document collection, whichever is more.
+// through an index key and, for a find or a pipeline that returns documents
+// unchanged, read no more documents than it returned or a tenth of the
+// collDocs-document collection, whichever is more.
 // Unlike explain, which plans separately, this measures the command itself.
 func indexedReads(b *testing.B, ctx context.Context, col *mongo.Collection, inner bson.D, collDocs int) (bool, string) {
 	b.Helper()
@@ -268,10 +269,34 @@ func indexedReads(b *testing.B, ctx context.Context, col *mongo.Collection, inne
 		b.Logf("server reports no queryExecutor counters; reads unchecked")
 	case r.docs > r.keys:
 		return false, fmt.Sprintf("read %d docs but only %d index keys: some came from a collection scan", r.docs, r.keys)
-	case inner[0].Key == "find" && r.docs > max(r.returned, int64(collDocs/10)):
+	case returnsReadDocuments(inner) && r.docs > max(r.returned, int64(collDocs/10)):
 		return false, fmt.Sprintf("read %d of %d docs for %d results", r.docs, collDocs, r.returned)
 	}
 	return true, ""
+}
+
+// returnsReadDocuments reports whether cmd returns the documents it reads
+// unchanged: a find, or a pipeline of only $match, $sort, and $limit.
+func returnsReadDocuments(cmd bson.D) bool {
+	switch cmd[0].Key {
+	case "find":
+		return true
+	case "aggregate":
+		for _, e := range cmd {
+			if e.Key != "pipeline" {
+				continue
+			}
+			for _, st := range e.Value.(bson.A) {
+				switch st.(bson.D)[0].Key {
+				case "$match", "$sort", "$limit":
+				default:
+					return false
+				}
+			}
+			return true
+		}
+	}
+	return false
 }
 
 // reads is the work a command did by serverStatus metrics.queryExecutor: index
@@ -541,6 +566,57 @@ func BenchmarkIndexUse_CompoundPrefixSortLimit_10K(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		runFind(b, ctx, col, filter(i), sort, 10)
 	}
+}
+
+// benchmarkIndexedAggregate times pipeline(i) after asserting pipeline(probe)
+// uses the index.
+func benchmarkIndexedAggregate(b *testing.B, label string, keys bson.D, pipeline func(i int) bson.A) {
+	col, ctx, dumbo := withIndexUseCollection(b, label, keys)
+	requireIndexUse(b, ctx, col, dumbo, aggregateCmd(col, pipeline(indexUseDocs/2)), mustUseIndex)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		cur, err := col.Aggregate(ctx, pipeline(i%indexUseDocs))
+		if err != nil {
+			b.Fatalf("Aggregate: %v", err)
+		}
+		var out []bson.M
+		if err := cur.All(ctx, &out); err != nil {
+			b.Fatalf("cursor.All: %v", err)
+		}
+	}
+}
+
+func matchStage(filter bson.D) bson.D { return bson.D{{Key: "$match", Value: filter}} }
+
+var (
+	sortKStage   = bson.D{{Key: "$sort", Value: bson.D{{Key: "k", Value: -1}}}}
+	limit10Stage = bson.D{{Key: "$limit", Value: 10}}
+)
+
+func BenchmarkIndexUse_AggMatch_10K(b *testing.B) {
+	benchmarkIndexedAggregate(b, "iu_agg_match", flatKey, func(i int) bson.A {
+		return bson.A{matchStage(eqOn("k")(i))}
+	})
+}
+
+func BenchmarkIndexUse_AggSortLimit_10K(b *testing.B) {
+	benchmarkIndexedAggregate(b, "iu_agg_sort", flatKey, func(int) bson.A {
+		return bson.A{sortKStage, limit10Stage}
+	})
+}
+
+func BenchmarkIndexUse_AggMatchSortLimit_10K(b *testing.B) {
+	benchmarkIndexedAggregate(b, "iu_agg_match_sort", flatKey, func(i int) bson.A {
+		return bson.A{matchStage(rangeOn("k", 1000)(i)), sortKStage, limit10Stage}
+	})
+}
+
+func BenchmarkIndexUse_AggMatchGroup_10K(b *testing.B) {
+	benchmarkIndexedAggregate(b, "iu_agg_match_group", flatKey, func(i int) bson.A {
+		return bson.A{matchStage(rangeOn("k", 50)(i)), bson.D{{Key: "$group", Value: bson.D{
+			{Key: "_id", Value: "$grp"}, {Key: "n", Value: bson.D{{Key: "$sum", Value: 1}}},
+		}}}}
+	})
 }
 
 func benchmarkIndexedCount(b *testing.B, label string, keys bson.D, filter func(i int) bson.D) {
