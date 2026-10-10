@@ -68,6 +68,13 @@ func withIndexUseCollectionOf(b *testing.B, label string, keys bson.D, docOf fun
 // "idx" on keys with opts.
 func withIndexUseCollectionIndexed(b *testing.B, label string, opts *options.IndexOptions, keys bson.D, docOf func(i int) bson.D) (*mongo.Collection, context.Context, bool) {
 	b.Helper()
+	return withIndexUseCollectionN(b, label, indexUseDocs, opts, keys, docOf)
+}
+
+// withIndexUseCollectionN seeds n of docOf's documents and creates the index
+// "idx" on keys with opts.
+func withIndexUseCollectionN(b *testing.B, label string, n int, opts *options.IndexOptions, keys bson.D, docOf func(i int) bson.D) (*mongo.Collection, context.Context, bool) {
+	b.Helper()
 	ctx := context.Background()
 	client, err := connect(ctx)
 	if err != nil {
@@ -80,9 +87,9 @@ func withIndexUseCollectionIndexed(b *testing.B, label string, opts *options.Ind
 	})
 	const batch = 1000
 	buf := make([]interface{}, 0, batch)
-	for i := 0; i < indexUseDocs; i++ {
+	for i := 0; i < n; i++ {
 		buf = append(buf, docOf(i))
-		if len(buf) == batch || i == indexUseDocs-1 {
+		if len(buf) == batch || i == n-1 {
 			if _, err := col.InsertMany(ctx, buf, options.InsertMany().SetOrdered(false)); err != nil {
 				b.Fatalf("seed: %v", err)
 			}
@@ -413,11 +420,16 @@ func benchmarkIndexedFind(b *testing.B, label string, keys bson.D, filter func(i
 }
 
 func benchmarkIndexedFindOf(b *testing.B, label string, keys bson.D, docOf func(i int) bson.D, filter func(i int) bson.D, sort bson.D, limit int64, exp indexUseExpectation) {
-	col, ctx, dumbo := withIndexUseCollectionOf(b, label, keys, docOf)
-	requireIndexUse(b, ctx, col, dumbo, findCmd(col, filter(indexUseDocs/2), sort, limit), exp)
+	benchmarkIndexedFindN(b, label, indexUseDocs, keys, docOf, filter, sort, limit, exp)
+}
+
+// benchmarkIndexedFindN is benchmarkIndexedFindOf on n documents.
+func benchmarkIndexedFindN(b *testing.B, label string, n int, keys bson.D, docOf func(i int) bson.D, filter func(i int) bson.D, sort bson.D, limit int64, exp indexUseExpectation) {
+	col, ctx, dumbo := withIndexUseCollectionN(b, label, n, options.Index(), keys, docOf)
+	requireIndexUseOf(b, ctx, col, dumbo, findCmd(col, filter(n/2), sort, limit), "idx", n, exp)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		runFind(b, ctx, col, filter(i%indexUseDocs), sort, limit)
+		runFind(b, ctx, col, filter(i%n), sort, limit)
 	}
 }
 
@@ -1009,6 +1021,52 @@ func BenchmarkIndexUse_UpsertUnique_10K(b *testing.B) {
 			b.Fatalf("UpdateOne upsert: %v", err)
 		}
 	}
+}
+
+// 50K variants: the same checks hold at five times the size, and indexed
+// latency should stay near the 10K figure while a scan's grows fivefold.
+const indexUseDocs50K = 50000
+
+func benchmarkIndexedFind50K(b *testing.B, label string, keys bson.D, filter func(i int) bson.D, sort bson.D, limit int64) {
+	benchmarkIndexedFindN(b, label, indexUseDocs50K, keys, indexUseDoc, filter, sort, limit, mustUseIndex)
+}
+
+func BenchmarkIndexUse_FlatEq_50K(b *testing.B) {
+	benchmarkIndexedFind50K(b, "iu50_flat_eq", flatKey, eqOn("k"), nil, 0)
+}
+
+func BenchmarkIndexUse_FlatRange_50K(b *testing.B) {
+	benchmarkIndexedFind50K(b, "iu50_flat_range", flatKey, rangeOn("k", 50), nil, 0)
+}
+
+func BenchmarkIndexUse_FlatIn_50K(b *testing.B) {
+	benchmarkIndexedFind50K(b, "iu50_flat_in", flatKey, inOn("k"), nil, 0)
+}
+
+func BenchmarkIndexUse_CompoundPrefix_50K(b *testing.B) {
+	benchmarkIndexedFind50K(b, "iu50_cmp_prefix", compoundKey, func(i int) bson.D {
+		return bson.D{{Key: "grp", Value: int32(i % 1000)}}
+	}, nil, 0)
+}
+
+func BenchmarkIndexUse_DottedEq_50K(b *testing.B) {
+	benchmarkIndexedFind50K(b, "iu50_dot_eq", dottedKey, eqOn("a.b"), nil, 0)
+}
+
+func BenchmarkIndexUse_ThroughArrayEq_50K(b *testing.B) {
+	benchmarkIndexedFind50K(b, "iu50_arr_eq", skuKey, func(i int) bson.D {
+		return bson.D{{Key: "items.sku", Value: fmt.Sprintf("sku-%d-1", i)}}
+	}, nil, 0)
+}
+
+func BenchmarkIndexUse_FlatSortLimit_50K(b *testing.B) {
+	benchmarkIndexedFind50K(b, "iu50_flat_sort", flatKey, func(int) bson.D { return bson.D{} }, bson.D{{Key: "k", Value: 1}}, 10)
+}
+
+func BenchmarkIndexUse_CompoundPrefixSortLimit_50K(b *testing.B) {
+	docOf := func(i int) bson.D { return append(indexUseDoc(i), bson.E{Key: "bucket", Value: int32(i % 5)}) }
+	benchmarkIndexedFindN(b, "iu50_cmp_prefix_sort", indexUseDocs50K, bson.D{{Key: "bucket", Value: 1}, {Key: "k", Value: 1}}, docOf,
+		func(i int) bson.D { return bson.D{{Key: "bucket", Value: int32(i % 5)}} }, bson.D{{Key: "k", Value: -1}}, 10, mustUseIndex)
 }
 
 func benchmarkIndexedCount(b *testing.B, label string, keys bson.D, filter func(i int) bson.D) {

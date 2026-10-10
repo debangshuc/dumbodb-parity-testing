@@ -84,7 +84,9 @@ traversal visits two documents. These are at `_10K` `[_Indexed]`.
 
 **Index-use variants** (in `index_use_bench_test.go`): a query that silently
 falls back to a collection scan still returns correct results, so only latency
-shows it. Each `IndexUse_*` benchmark seeds 10K documents and, before timing,
+shows it. Each `IndexUse_*` benchmark seeds 10K documents (50K for the `_50K`
+variants of the core lookups and sorts, whose indexed latency should match the
+10K figure) and, before timing,
 runs the operation through `explain` (`executionStats`) and fails unless the
 winning plan has an index scan on the expected index and, for `find`, the
 documents examined stay within the results returned or a tenth of the
