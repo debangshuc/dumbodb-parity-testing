@@ -686,6 +686,51 @@ func BenchmarkIndexUse_HintedSparse_10K(b *testing.B) {
 	}
 }
 
+// Collated index on the string field s ("s00042"); the queries carry the same
+// collation, so the index's ICU sort keys serve them. A non-empty dumboCrash
+// names the issue tracking a DumboDB failure that skips the benchmark there.
+func benchmarkCollatedFind(b *testing.B, label string, filter func(i int) bson.D, sort bson.D, limit int64, exp indexUseExpectation, dumboCrash string) {
+	coll := &options.Collation{Locale: "fr_CA"}
+	docOf := func(i int) bson.D { return append(indexUseDoc(i), bson.E{Key: "s", Value: fmt.Sprintf("s%05d", i)}) }
+	col, ctx, dumbo := withIndexUseCollectionIndexed(b, label, options.Index().SetCollation(coll), bson.D{{Key: "s", Value: 1}}, docOf)
+	if dumbo && dumboCrash != "" {
+		b.Skipf("DumboDB fails this query (%s); unskip once fixed", dumboCrash)
+	}
+	requireIndexUse(b, ctx, col, dumbo, append(findCmd(col, filter(indexUseDocs/2), sort, limit),
+		bson.E{Key: "collation", Value: bson.D{{Key: "locale", Value: coll.Locale}}}), exp)
+	opts := options.Find().SetCollation(coll)
+	if sort != nil {
+		opts.SetSort(sort)
+	}
+	if limit > 0 {
+		opts.SetLimit(limit)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		cur, err := col.Find(ctx, filter(i%indexUseDocs), opts)
+		if err != nil {
+			b.Fatalf("Find: %v", err)
+		}
+		var docs []bson.M
+		if err := cur.All(ctx, &docs); err != nil {
+			b.Fatalf("cursor.All: %v", err)
+		}
+	}
+}
+
+func BenchmarkIndexUse_CollatedRange_10K(b *testing.B) {
+	benchmarkCollatedFind(b, "iu_coll_range", func(i int) bson.D {
+		return bson.D{{Key: "s", Value: bson.D{
+			{Key: "$gte", Value: fmt.Sprintf("s%05d", i)}, {Key: "$lt", Value: fmt.Sprintf("s%05d", i+50)},
+		}}}
+	}, nil, 0, mustUseIndex, "workspace-kl5: operator filters on a collated index field panic")
+}
+
+func BenchmarkIndexUse_CollatedSortLimit_10K(b *testing.B) {
+	benchmarkCollatedFind(b, "iu_coll_sort", func(int) bson.D { return bson.D{} },
+		bson.D{{Key: "s", Value: 1}}, 10, indexUseExpectation{knownDumboGap: "workspace-via: collated sorts never use the index"}, "")
+}
+
 // An equality on a compound index's leading field leaves the scan in order of
 // the next field, so a sort on it with a limit reads only the limit's
 // documents. Each bucket holds a fifth of the collection, so fetching every
