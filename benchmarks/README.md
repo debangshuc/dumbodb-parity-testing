@@ -35,6 +35,15 @@ projection discards almost all of each document, without and with a `grp`
 filter. `Agg_Project_10KB` is the same `$project` as `Agg_Project` over those
 10KB documents.
 
+**Document-size variants** (in `sized_bench_test.go`, `typed_bench_test.go` and
+`mutation_bench_test.go`): `InsertOne`, `FindOne` and `UpdateOne_SetField` run
+at 1KB, 10KB, 100KB and 1MB documents, and `InsertOne` and `FindOne` also have
+`TypedRealistic` variants at those sizes.
+The nested-update benchmarks (`ArrayExtend`, `ArrayShorten`, `FieldInsert`,
+`FieldRemove`, at depths 1, 3 and 5) run at 10KB, 100KB and 1MB. Benchmarks
+that seed a collection seed fewer documents as documents grow, so each size
+costs about the same to set up.
+
 **Dataset**: 1,000 small (~100 byte) documents per benchmark. A single
 collection is seeded fresh per benchmark; the server used depends on the
 `-bench.target-uri` flag. All documents share a fixed shape
