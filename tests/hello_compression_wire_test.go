@@ -30,8 +30,8 @@ import (
 // over OP_MSG directly. Each case uses a fresh connection so no case inherits
 // another's negotiation; mongod also negotiates on a later hello (second_hello).
 //
-// DumboDB advertises no compressors yet (dolthub/dumbodb#109), so cases where
-// mongod accepts something are XFail until inbound OP_COMPRESSED lands.
+// DumboDB supports only snappy so far (dolthub/dumbodb#109), so cases where
+// mongod also accepts zlib or zstd are XFail until DumboDB supports them.
 func TestHelloCompression_wire(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -45,6 +45,10 @@ func TestHelloCompression_wire(t *testing.T) {
 		{"hello_client_order", "hello", bson.A{"zstd", "zlib", "snappy"}, false, harness.DumboDBXFail},
 		{"hello_with_unknown", "hello", bson.A{"lz4", "zlib"}, false, harness.DumboDBXFail},
 		{"hello_only_unknown", "hello", bson.A{"lz4"}, false, harness.DumboDBFull},
+		{"hello_snappy", "hello", bson.A{"snappy"}, false, harness.DumboDBFull},
+		{"hello_snappy_with_unknown", "hello", bson.A{"lz4", "snappy"}, false, harness.DumboDBFull},
+		{"ismaster_snappy", "isMaster", bson.A{"snappy"}, false, harness.DumboDBFull},
+		{"second_hello_snappy", "hello", bson.A{"snappy"}, true, harness.DumboDBFull},
 		{"hello_empty", "hello", bson.A{}, false, harness.DumboDBFull},
 		{"ismaster_all", "isMaster", bson.A{"snappy", "zlib", "zstd"}, false, harness.DumboDBXFail},
 		{"second_hello", "hello", bson.A{"snappy", "zlib", "zstd"}, true, harness.DumboDBXFail},

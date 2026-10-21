@@ -31,20 +31,29 @@ import (
 	"strings"
 	"time"
 
+	"github.com/golang/snappy"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 const (
-	opCompressed   int32 = 2012
-	opMsg          int32 = 2013
-	compressorZlib byte  = 2
+	opCompressed int32 = 2012
+	opMsg        int32 = 2013
+)
+
+// OP_COMPRESSED compressor ids.
+const (
+	CompressorNoop   byte = 0
+	CompressorSnappy byte = 1
+	CompressorZlib   byte = 2
 )
 
 // Conn is not safe for concurrent use.
 type Conn struct {
 	c     net.Conn
 	reqID int32
+
+	lastReplyCompressor int
 }
 
 // Dial accepts "host:port" or "mongodb://host:port".
@@ -57,7 +66,7 @@ func Dial(addr string) (*Conn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("dial %s: %w", hp, err)
 	}
-	return &Conn{c: c}, nil
+	return &Conn{c: c, lastReplyCompressor: -1}, nil
 }
 
 func (c *Conn) Close() error { return c.c.Close() }
@@ -104,6 +113,12 @@ func (c *Conn) RunCommandFlags(cmd interface{}, flags uint32) (bson.M, uint32, e
 }
 
 func (c *Conn) RunZlibCompressedCommand(cmd interface{}) (bson.M, error) {
+	return c.RunCompressedCommand(cmd, CompressorZlib)
+}
+
+// RunCompressedCommand sends cmd as an OP_MSG wrapped in OP_COMPRESSED with the
+// given compressor, whether or not the server advertised it.
+func (c *Conn) RunCompressedCommand(cmd interface{}, compressor byte) (bson.M, error) {
 	document, err := bson.Marshal(cmd)
 	if err != nil {
 		return nil, fmt.Errorf("marshal cmd: %w", err)
@@ -113,19 +128,15 @@ func (c *Conn) RunZlibCompressedCommand(cmd interface{}) (bson.M, error) {
 	uncompressed = append(uncompressed, 0)
 	uncompressed = append(uncompressed, document...)
 
-	var compressed bytes.Buffer
-	writer := zlib.NewWriter(&compressed)
-	if _, err := writer.Write(uncompressed); err != nil {
-		return nil, fmt.Errorf("compress cmd: %w", err)
-	}
-	if err := writer.Close(); err != nil {
-		return nil, fmt.Errorf("finish compressed cmd: %w", err)
+	compressed, err := compress(uncompressed, compressor)
+	if err != nil {
+		return nil, err
 	}
 
 	c.reqID++
 	const headerLen = 16
 	const compressedHeaderLen = 9
-	msgLen := int32(headerLen + compressedHeaderLen + compressed.Len())
+	msgLen := int32(headerLen + compressedHeaderLen + len(compressed))
 	out := make([]byte, 0, msgLen)
 	out = appendI32(out, msgLen)
 	out = appendI32(out, c.reqID)
@@ -133,13 +144,54 @@ func (c *Conn) RunZlibCompressedCommand(cmd interface{}) (bson.M, error) {
 	out = appendI32(out, opCompressed)
 	out = appendI32(out, opMsg)
 	out = appendI32(out, int32(len(uncompressed)))
-	out = append(out, compressorZlib)
-	out = append(out, compressed.Bytes()...)
+	out = append(out, compressor)
+	out = append(out, compressed...)
 	if _, err := c.c.Write(out); err != nil {
 		return nil, fmt.Errorf("write compressed command: %w", err)
 	}
 	reply, _, err := c.readCommandReply()
 	return reply, err
+}
+
+// LastReplyCompressor returns the compressor id of the last reply read, or -1
+// when it arrived uncompressed.
+func (c *Conn) LastReplyCompressor() int { return c.lastReplyCompressor }
+
+func compress(body []byte, compressor byte) ([]byte, error) {
+	switch compressor {
+	case CompressorNoop:
+		return body, nil
+	case CompressorSnappy:
+		return snappy.Encode(nil, body), nil
+	case CompressorZlib:
+		var compressed bytes.Buffer
+		writer := zlib.NewWriter(&compressed)
+		if _, err := writer.Write(body); err != nil {
+			return nil, fmt.Errorf("compress cmd: %w", err)
+		}
+		if err := writer.Close(); err != nil {
+			return nil, fmt.Errorf("finish compressed cmd: %w", err)
+		}
+		return compressed.Bytes(), nil
+	}
+	return nil, fmt.Errorf("unsupported compressor id %d", compressor)
+}
+
+func decompress(payload []byte, compressor byte) ([]byte, error) {
+	switch compressor {
+	case CompressorNoop:
+		return payload, nil
+	case CompressorSnappy:
+		return snappy.Decode(nil, payload)
+	case CompressorZlib:
+		reader, err := zlib.NewReader(bytes.NewReader(payload))
+		if err != nil {
+			return nil, err
+		}
+		defer reader.Close()
+		return io.ReadAll(reader)
+	}
+	return nil, fmt.Errorf("unsupported reply compressor id %d", compressor)
 }
 
 func (c *Conn) readCommandReply() (bson.M, uint32, error) {
@@ -155,13 +207,27 @@ func (c *Conn) readCommandReply() (bson.M, uint32, error) {
 		return nil, 0, fmt.Errorf("short OP_MSG reply: %d bytes", replyLen)
 	}
 	replyOp := int32(binary.LittleEndian.Uint32(hdr[12:16]))
-	if replyOp != opMsg {
+	if replyOp != opMsg && replyOp != opCompressed {
 		return nil, 0, fmt.Errorf("unexpected reply opcode %d (want OP_MSG)", replyOp)
 	}
 
 	rest := make([]byte, replyLen-headerLen)
 	if _, err := io.ReadFull(c.c, rest); err != nil {
 		return nil, 0, fmt.Errorf("read body: %w", err)
+	}
+
+	c.lastReplyCompressor = -1
+	if replyOp == opCompressed {
+		if len(rest) < 9 || int32(binary.LittleEndian.Uint32(rest[0:4])) != opMsg {
+			return nil, 0, errors.New("malformed OP_COMPRESSED reply")
+		}
+		compressor := rest[8]
+		body, err := decompress(rest[9:], compressor)
+		if err != nil {
+			return nil, 0, fmt.Errorf("decompress reply: %w", err)
+		}
+		rest = body
+		c.lastReplyCompressor = int(compressor)
 	}
 
 	// rest layout: [4 flagBits][1 sectionKind][body...]
