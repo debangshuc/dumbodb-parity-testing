@@ -54,7 +54,27 @@ type Conn struct {
 	reqID int32
 
 	lastReplyCompressor int
+	traffic             Traffic
 }
+
+// Traffic totals what a Conn sent and received, in the terms mongod's
+// serverStatus.network uses: logical sizes are whole uncompressed messages,
+// wire sizes are what crossed the socket, and compressed payload and body sizes
+// exclude the header and the OP_COMPRESSED prefix.
+type Traffic struct {
+	Requests            int64
+	RequestLogicalBytes int64
+	RequestWireBytes    int64
+	RequestPayloadBytes int64
+	RequestBodyBytes    int64
+	ReplyLogicalBytes   int64
+	ReplyWireBytes      int64
+	ReplyPayloadBytes   int64
+	ReplyBodyBytes      int64
+}
+
+// Traffic returns the totals since the connection was dialed.
+func (c *Conn) Traffic() Traffic { return c.traffic }
 
 // Dial accepts "host:port" or "mongodb://host:port".
 func Dial(addr string) (*Conn, error) {
@@ -109,6 +129,9 @@ func (c *Conn) RunCommandFlags(cmd interface{}, flags uint32) (bson.M, uint32, e
 	if _, err := c.c.Write(out); err != nil {
 		return nil, 0, fmt.Errorf("write: %w", err)
 	}
+	c.traffic.Requests++
+	c.traffic.RequestLogicalBytes += int64(len(out))
+	c.traffic.RequestWireBytes += int64(len(out))
 	return c.readCommandReply()
 }
 
@@ -149,6 +172,11 @@ func (c *Conn) RunCompressedCommand(cmd interface{}, compressor byte) (bson.M, e
 	if _, err := c.c.Write(out); err != nil {
 		return nil, fmt.Errorf("write compressed command: %w", err)
 	}
+	c.traffic.Requests++
+	c.traffic.RequestLogicalBytes += int64(headerLen + len(uncompressed))
+	c.traffic.RequestWireBytes += int64(len(out))
+	c.traffic.RequestPayloadBytes += int64(len(compressed))
+	c.traffic.RequestBodyBytes += int64(len(uncompressed))
 	reply, _, err := c.readCommandReply()
 	return reply, err
 }
@@ -217,6 +245,7 @@ func (c *Conn) readCommandReply() (bson.M, uint32, error) {
 	}
 
 	c.lastReplyCompressor = -1
+	c.traffic.ReplyWireBytes += int64(replyLen)
 	if replyOp == opCompressed {
 		if len(rest) < 9 || int32(binary.LittleEndian.Uint32(rest[0:4])) != opMsg {
 			return nil, 0, errors.New("malformed OP_COMPRESSED reply")
@@ -226,9 +255,12 @@ func (c *Conn) readCommandReply() (bson.M, uint32, error) {
 		if err != nil {
 			return nil, 0, fmt.Errorf("decompress reply: %w", err)
 		}
+		c.traffic.ReplyPayloadBytes += int64(len(rest) - 9)
+		c.traffic.ReplyBodyBytes += int64(len(body))
 		rest = body
 		c.lastReplyCompressor = int(compressor)
 	}
+	c.traffic.ReplyLogicalBytes += int64(headerLen + len(rest))
 
 	// rest layout: [4 flagBits][1 sectionKind][body...]
 	if len(rest) < 5 {
