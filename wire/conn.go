@@ -25,6 +25,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"net"
 	"net/url"
@@ -54,6 +55,7 @@ type Conn struct {
 	reqID int32
 
 	lastReplyCompressor int
+	lastReplyChecksum   string
 	traffic             Traffic
 }
 
@@ -86,7 +88,7 @@ func Dial(addr string) (*Conn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("dial %s: %w", hp, err)
 	}
-	return &Conn{c: c, lastReplyCompressor: -1}, nil
+	return &Conn{c: c, lastReplyCompressor: -1, lastReplyChecksum: "none"}, nil
 }
 
 func (c *Conn) Close() error { return c.c.Close() }
@@ -185,6 +187,80 @@ func (c *Conn) RunCompressedCommand(cmd interface{}, compressor byte) (bson.M, e
 // when it arrived uncompressed.
 func (c *Conn) LastReplyCompressor() int { return c.lastReplyCompressor }
 
+// LastReplyChecksum reports the last reply's OP_MSG checksum: "none", "valid"
+// or "invalid".
+func (c *Conn) LastReplyChecksum() string { return c.lastReplyChecksum }
+
+// Checksum selects what RunChecksummedCommand puts after an OP_MSG whose
+// checksumPresent flag is set.
+type Checksum int
+
+const (
+	ChecksumValid    Checksum = iota // correct CRC-32C
+	ChecksumCorrupt                  // CRC-32C with bits flipped
+	ChecksumFlagOnly                 // flag set, no checksum bytes
+)
+
+const checksumPresent uint32 = 1
+
+var castagnoli = crc32.MakeTable(crc32.Castagnoli)
+
+// RunChecksummedCommand sends cmd as an OP_MSG with checksumPresent set and the
+// given checksum, wrapped in OP_COMPRESSED when compressor is not -1. The
+// checksum covers the uncompressed message, header included.
+func (c *Conn) RunChecksummedCommand(cmd interface{}, checksum Checksum, compressor int) (bson.M, error) {
+	document, err := bson.Marshal(cmd)
+	if err != nil {
+		return nil, fmt.Errorf("marshal cmd: %w", err)
+	}
+	const headerLen = 16
+	msgLen := headerLen + 5 + len(document)
+	if checksum != ChecksumFlagOnly {
+		msgLen += crc32.Size
+	}
+	c.reqID++
+	msg := make([]byte, 0, msgLen)
+	msg = appendI32(msg, int32(msgLen))
+	msg = appendI32(msg, c.reqID)
+	msg = appendI32(msg, 0)
+	msg = appendI32(msg, opMsg)
+	msg = appendI32(msg, int32(checksumPresent))
+	msg = append(msg, 0)
+	msg = append(msg, document...)
+	if checksum != ChecksumFlagOnly {
+		sum := crc32.Checksum(msg, castagnoli)
+		if checksum == ChecksumCorrupt {
+			sum ^= 0xdeadbeef
+		}
+		msg = binary.LittleEndian.AppendUint32(msg, sum)
+	}
+
+	out := msg
+	if compressor != -1 {
+		compressed, err := compress(msg[headerLen:], byte(compressor))
+		if err != nil {
+			return nil, err
+		}
+		out = make([]byte, 0, headerLen+9+len(compressed))
+		out = appendI32(out, int32(headerLen+9+len(compressed)))
+		out = appendI32(out, c.reqID)
+		out = appendI32(out, 0)
+		out = appendI32(out, opCompressed)
+		out = appendI32(out, opMsg)
+		out = appendI32(out, int32(len(msg)-headerLen))
+		out = append(out, byte(compressor))
+		out = append(out, compressed...)
+	}
+	if _, err := c.c.Write(out); err != nil {
+		return nil, fmt.Errorf("write checksummed command: %w", err)
+	}
+	c.traffic.Requests++
+	c.traffic.RequestLogicalBytes += int64(len(msg))
+	c.traffic.RequestWireBytes += int64(len(out))
+	reply, _, err := c.readCommandReply()
+	return reply, err
+}
+
 func compress(body []byte, compressor byte) ([]byte, error) {
 	switch compressor {
 	case CompressorNoop:
@@ -267,6 +343,26 @@ func (c *Conn) readCommandReply() (bson.M, uint32, error) {
 		return nil, 0, errors.New("malformed OP_MSG reply: truncated section header")
 	}
 	replyFlags := binary.LittleEndian.Uint32(rest[0:4])
+	c.lastReplyChecksum = "none"
+	if replyFlags&checksumPresent != 0 {
+		if len(rest) < 5+crc32.Size {
+			return nil, 0, errors.New("malformed OP_MSG reply: checksum flag without checksum")
+		}
+		// A compressed reply's checksum covers the message before compression,
+		// so rebuild that header.
+		var original [headerLen]byte
+		copy(original[:], hdr[:])
+		binary.LittleEndian.PutUint32(original[0:4], uint32(headerLen+len(rest)))
+		binary.LittleEndian.PutUint32(original[12:16], uint32(opMsg))
+		hasher := crc32.New(castagnoli)
+		_, _ = hasher.Write(original[:])
+		_, _ = hasher.Write(rest[:len(rest)-crc32.Size])
+		c.lastReplyChecksum = "invalid"
+		if hasher.Sum32() == binary.LittleEndian.Uint32(rest[len(rest)-crc32.Size:]) {
+			c.lastReplyChecksum = "valid"
+		}
+		rest = rest[:len(rest)-crc32.Size]
+	}
 	sectionKind := rest[4]
 	if sectionKind != 0 {
 		return nil, 0, fmt.Errorf("unexpected section kind %d (only kind 0 supported)", sectionKind)
