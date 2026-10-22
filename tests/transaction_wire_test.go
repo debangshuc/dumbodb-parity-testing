@@ -173,7 +173,7 @@ func runWireParity(t *testing.T, name string, support harness.DumboDBSupport, to
 		}
 	case harness.DumboDBXFail:
 		if cmp.Result == harness.Match {
-			t.Logf("XFAIL %s: PASS (DumboDB matched)", name)
+			t.Errorf("XPASS %s: DumboDB now matches MongoDB -- promote to DumboDBFull", name)
 		} else {
 			t.Logf("XFAIL %s: diverged as expected\n%s", name, cmp.Diff)
 		}

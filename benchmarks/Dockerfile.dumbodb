@@ -48,6 +48,8 @@ EXPOSE 27018
 # without recompiling. Zero runtime overhead when no client connects.
 # The compare runner publishes 6060 to the host in source-build mode.
 EXPOSE 6060
+# dumbodb refuses to start on a missing --data-dir, as mongod does.
+RUN mkdir -p /var/lib/dumbodb
 VOLUME ["/var/lib/dumbodb"]
 
 ENTRYPOINT ["/usr/local/bin/dumbodb"]
