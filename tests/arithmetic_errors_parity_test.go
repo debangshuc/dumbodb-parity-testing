@@ -27,12 +27,10 @@ import (
 	"github.com/dolthub/dumbodb-parity-testing/harness"
 )
 
-// Arithmetic errors: MongoDB reports division and modulo by zero, and
-// non-numeric operands, with specific codes (BadValue, TypeMismatch,
-// Location16610, ...). DumboDB reports most of them as InternalError or
-// Location16020 (workspace-1du). The math operator cases pin MongoDB's
-// results, types and errors. Each case is its own pair test so it can move to
-// DumboDBFull as it is fixed.
+// Arithmetic errors and math operator results: MongoDB's codes for division
+// and modulo by zero and non-numeric operands, and its results, types and
+// errors for the math operators. Each case is its own pair test so a
+// divergence can be marked XFail on its own.
 
 func insertArithmeticDocs(ctx context.Context, col *mongo.Collection) error {
 	docs := make([]interface{}, 300)
@@ -121,39 +119,41 @@ func TestArithmeticErrors(t *testing.T) {
 		support harness.DumboDBSupport
 		run     func(context.Context, *mongo.Collection) (interface{}, error)
 	}{
-		{"Divide_ZeroField", harness.DumboDBXFail, projectFirst(divide("$v", "$d"))},
-		{"Divide_ZeroInt", harness.DumboDBXFail, projectFirst(divide("$v", 0))},
-		{"Divide_ZeroLong", harness.DumboDBXFail, projectFirst(divide("$v", int64(0)))},
-		{"Divide_ZeroDouble", harness.DumboDBXFail, projectFirst(divide("$v", 0.0))},
-		{"Divide_NegativeZeroDouble", harness.DumboDBXFail, projectFirst(divide("$v", -0.0))},
-		{"Divide_ZeroDecimal", harness.DumboDBXFail, projectFirst(divide("$v", dec0))},
-		{"Divide_ZeroByZeroDouble", harness.DumboDBXFail, projectFirst(divide(0.0, 0.0))},
-		{"Divide_StringDivisor", harness.DumboDBXFail, projectFirst(divide("$v", "$s"))},
+		{"Divide_ZeroField", harness.DumboDBFull, projectFirst(divide("$v", "$d"))},
+		{"Divide_ZeroInt", harness.DumboDBFull, projectFirst(divide("$v", 0))},
+		{"Divide_ZeroLong", harness.DumboDBFull, projectFirst(divide("$v", int64(0)))},
+		{"Divide_ZeroDouble", harness.DumboDBFull, projectFirst(divide("$v", 0.0))},
+		{"Divide_NegativeZeroDouble", harness.DumboDBFull, projectFirst(divide("$v", -0.0))},
+		{"Divide_ZeroDecimal", harness.DumboDBFull, projectFirst(divide("$v", dec0))},
+		{"Divide_ZeroByZeroDouble", harness.DumboDBFull, projectFirst(divide(0.0, 0.0))},
+		{"Divide_StringDivisor", harness.DumboDBFull, projectFirst(divide("$v", "$s"))},
 		{"Divide_NullDivisor", harness.DumboDBFull, projectFirst(divide("$v", nil))},
 		{"Divide_MissingDivisor", harness.DumboDBFull, projectFirst(divide("$v", "$missing"))},
-		{"Mod_ZeroInt", harness.DumboDBXFail, projectFirst(mod("$v", 0))},
-		{"Mod_ZeroLong", harness.DumboDBXFail, projectFirst(mod("$v", int64(0)))},
-		{"Mod_ZeroDouble", harness.DumboDBXFail, projectFirst(mod("$v", 0.0))},
-		{"Mod_NegativeZeroDouble", harness.DumboDBXFail, projectFirst(mod("$v", -0.0))},
-		{"Mod_ZeroDecimal", harness.DumboDBXFail, projectFirst(mod("$v", dec0))},
-		{"Mod_StringDivisor", harness.DumboDBXFail, projectFirst(mod("$v", "$s"))},
+		{"Mod_ZeroInt", harness.DumboDBFull, projectFirst(mod("$v", 0))},
+		{"Mod_ZeroLong", harness.DumboDBFull, projectFirst(mod("$v", int64(0)))},
+		{"Mod_ZeroDouble", harness.DumboDBFull, projectFirst(mod("$v", 0.0))},
+		{"Mod_NegativeZeroDouble", harness.DumboDBFull, projectFirst(mod("$v", -0.0))},
+		{"Mod_ZeroDecimal", harness.DumboDBFull, projectFirst(mod("$v", dec0))},
+		{"Mod_StringDivisor", harness.DumboDBFull, projectFirst(mod("$v", "$s"))},
 		{"Mod_NullDivisor", harness.DumboDBFull, projectFirst(mod("$v", nil))},
-		{"Divide_ZeroAfterFirstBatch", harness.DumboDBXFail, pipelineRun(bson.A{
+		{"Divide_ZeroAfterFirstBatch", harness.DumboDBFull, pipelineRun(bson.A{
 			bson.D{{Key: "$match", Value: bson.D{{Key: "_id", Value: bson.D{{Key: "$gte", Value: 1}}}}}},
 			bson.D{{Key: "$sort", Value: bson.D{{Key: "_id", Value: 1}}}},
 			bson.D{{Key: "$project", Value: bson.D{{Key: "r", Value: divide("$v", "$d")}}}},
 		})},
-		{"Divide_InAddFields", harness.DumboDBXFail, pipelineRun(bson.A{
+		{"Divide_InAddFields", harness.DumboDBFull, pipelineRun(bson.A{
 			bson.D{{Key: "$addFields", Value: bson.D{{Key: "r", Value: divide("$v", 0)}}}},
 		})},
+		// MongoDB evaluates $group expressions in its SBE engine, whose error
+		// codes differ (workspace-siq).
 		{"Divide_InGroupAccumulator", harness.DumboDBXFail, pipelineRun(bson.A{
 			bson.D{{Key: "$group", Value: bson.D{{Key: "_id", Value: nil}, {Key: "r", Value: bson.D{{Key: "$sum", Value: divide("$v", 0)}}}}}},
 		})},
-		{"Divide_InFindExpr", harness.DumboDBXFail, func(ctx context.Context, col *mongo.Collection) (interface{}, error) {
+		{"Divide_InFindExpr", harness.DumboDBFull, func(ctx context.Context, col *mongo.Collection) (interface{}, error) {
 			cursor, err := col.Find(ctx, bson.D{{Key: "$expr", Value: bson.D{{Key: "$gt", Value: bson.A{divide("$v", "$d"), 0}}}}})
 			return drainCursor(ctx, cursor, err)
 		}},
-		{"Divide_InUpdatePipeline", harness.DumboDBXFail, func(ctx context.Context, col *mongo.Collection) (interface{}, error) {
+		{"Divide_InUpdatePipeline", harness.DumboDBFull, func(ctx context.Context, col *mongo.Collection) (interface{}, error) {
 			_, err := col.UpdateOne(ctx, bson.D{{Key: "_id", Value: 0}}, bson.A{bson.D{{Key: "$set", Value: bson.D{{Key: "r", Value: divide("$v", 0)}}}}})
 			return errOutcome(err), nil
 		}},
