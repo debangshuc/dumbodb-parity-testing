@@ -439,7 +439,10 @@ func TestMemberProtocol_RefusesDownstreamSyncPromptly(t *testing.T) {
 	}
 }
 
-func TestMemberProtocol_RefusesUnsolicitedCompressionPromptly(t *testing.T) {
+// Like mongod, DumboDB accepts OP_COMPRESSED for a compressor it supports
+// (snappy) whether or not it was negotiated, so this sends zlib, which DumboDB
+// does not support.
+func TestMemberProtocol_RefusesUnsupportedCompressorPromptly(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	defer cancel()
@@ -462,15 +465,15 @@ func TestMemberProtocol_RefusesUnsolicitedCompressionPromptly(t *testing.T) {
 	})
 	elapsed := time.Since(start)
 	if elapsed > promptly {
-		t.Errorf("dumbodb %s took %s to refuse unsolicited OP_COMPRESSED", f.commit, elapsed)
+		t.Errorf("dumbodb %s took %s to refuse zlib OP_COMPRESSED, a compressor it does not support", f.commit, elapsed)
 	}
 	if refusalErr == nil {
 		if ok(reply) {
-			t.Fatalf("dumbodb %s accepted unsolicited OP_COMPRESSED without negotiating compression", f.commit)
+			t.Fatalf("dumbodb %s accepted zlib OP_COMPRESSED, a compressor it does not support", f.commit)
 		}
 		message, _ := reply["errmsg"].(string)
 		if !strings.Contains(strings.ToLower(message), "compress") {
-			t.Fatalf("dumbodb %s refused unsolicited OP_COMPRESSED with %q, which does not name compression", f.commit, message)
+			t.Fatalf("dumbodb %s refused zlib OP_COMPRESSED with %q, which does not name compression", f.commit, message)
 		}
 		if _, err := conn.RunCommand(bson.D{{Key: "ping", Value: int32(1)}, {Key: "$db", Value: "admin"}}); err != nil {
 			t.Fatalf("dumbodb %s answered the refusal but left the connection unusable: %v", f.commit, err)
@@ -486,11 +489,11 @@ func TestMemberProtocol_RefusesUnsolicitedCompressionPromptly(t *testing.T) {
 			t.Fatal(err)
 		}
 		if strings.Contains(contents, logReason) {
-			t.Logf("dumbodb %s closed unsolicited OP_COMPRESSED in %s and logged %q", f.commit, elapsed, logReason)
+			t.Logf("dumbodb %s closed zlib OP_COMPRESSED in %s and logged %q", f.commit, elapsed, logReason)
 			return
 		}
 		if time.Now().After(logDeadline) {
-			t.Fatalf("dumbodb %s closed unsolicited OP_COMPRESSED in %s with %v, but its log does not explain the refusal", f.commit, elapsed, refusalErr)
+			t.Fatalf("dumbodb %s closed zlib OP_COMPRESSED in %s with %v, but its log does not explain the refusal", f.commit, elapsed, refusalErr)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
