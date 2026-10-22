@@ -93,3 +93,59 @@ func helloCompressionReply(addr, command string, compression bson.A, priorHello 
 		{Key: "compression", Value: negotiated},
 	}, nil
 }
+
+// TestHelloCompression_wire_sequences checks that the negotiated compressors
+// belong to the connection: a hello with a compression list replaces them, and
+// a hello without one reports them, as drivers see after their handshake.
+func TestHelloCompression_wire_sequences(t *testing.T) {
+	hello := func(command string, compression interface{}) bson.D {
+		cmd := bson.D{{Key: command, Value: int32(1)}}
+		if compression != nil {
+			cmd = append(cmd, bson.E{Key: "compression", Value: compression})
+		}
+		return append(cmd, bson.E{Key: "$db", Value: "admin"})
+	}
+	snappy := hello("hello", bson.A{"snappy"})
+	cases := []struct {
+		name  string
+		steps []bson.D
+	}{
+		{"no_list_reports_negotiated", []bson.D{snappy, hello("hello", nil)}},
+		{"ismaster_reports_negotiated", []bson.D{snappy, hello("isMaster", nil)}},
+		{"empty_list_clears", []bson.D{snappy, hello("hello", bson.A{}), hello("hello", nil)}},
+		{"unknown_list_clears", []bson.D{snappy, hello("hello", bson.A{"lz4"}), hello("hello", nil)}},
+		{"string_rejected_keeps_negotiated", []bson.D{snappy, hello("hello", "snappy"), hello("hello", nil)}},
+		{"non_string_rejected_keeps_negotiated", []bson.D{snappy, hello("hello", bson.A{int32(1)}), hello("hello", nil)}},
+		{"never_negotiated", []bson.D{hello("hello", nil), hello("hello", nil)}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			runWireParity(t, "hello_seq_"+tc.name, harness.DumboDBFull, harness.TopologyStandalone,
+				func(addr, _ string) (interface{}, error) {
+					c, err := wire.Dial(addr)
+					if err != nil {
+						return nil, fmt.Errorf("dial: %w", err)
+					}
+					defer c.Close()
+					_ = c.SetDeadline(time.Now().Add(15 * time.Second))
+
+					var replies bson.A
+					for _, step := range tc.steps {
+						reply, err := c.RunCommand(step)
+						if err != nil {
+							return nil, fmt.Errorf("%v: %w", step[0].Key, err)
+						}
+						negotiated, advertised := reply["compression"]
+						replies = append(replies, bson.D{
+							{Key: "ok", Value: reply["ok"]},
+							{Key: "code", Value: reply["code"]},
+							{Key: "errmsg", Value: reply["errmsg"]},
+							{Key: "advertised", Value: advertised},
+							{Key: "compression", Value: negotiated},
+						})
+					}
+					return replies, nil
+				})
+		})
+	}
+}
