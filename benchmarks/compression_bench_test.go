@@ -28,36 +28,51 @@ import (
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
+
+	"github.com/dolthub/dumbodb-parity-testing/shopdata"
 )
 
-// The compression benchmarks read the realistic dataset cmd/gendata writes,
-// because random payloads compress far worse than real documents. Seed it on
-// the target first (gendata -db shop). The compressor under test is chosen by
-// the target URI, e.g. ?compressors=snappy, so one benchmark covers every arm.
-var (
-	shopDB    = flag.String("bench.shop-db", envOr("BENCH_SHOP_DB", "shop"), "database seeded by cmd/gendata")
-	targetPID = flag.Int("bench.target-pid", envInt("BENCH_TARGET_PID"), "server process id; when set, server CPU per op is reported")
-)
+// The compression benchmarks use the realistic orders cmd/gendata writes,
+// because random payloads compress far worse than real documents; each seeds
+// its own collection. The compressor under test is chosen by the target URI,
+// e.g. ?compressors=snappy, so one benchmark covers every arm.
+var targetPID = flag.Int("bench.target-pid", envInt("BENCH_TARGET_PID"), "server process id; when set, server CPU per op is reported")
 
 func envInt(key string) int {
 	v, _ := strconv.Atoi(os.Getenv(key))
 	return v
 }
 
-func withShopOrders(b *testing.B) (*mongo.Client, *mongo.Collection, context.Context) {
+// withSeededOrders returns a fresh collection holding the first n orders of
+// the default shopdata dataset, with cmd/gendata's indexes on orders.
+func withSeededOrders(b *testing.B, label string, n int) (*mongo.Collection, context.Context) {
 	b.Helper()
 	ctx := context.Background()
 	client, err := connect(ctx)
 	if err != nil {
 		b.Fatalf("connect: %v", err)
 	}
-	b.Cleanup(func() { _ = client.Disconnect(context.Background()) })
-	orders := client.Database(*shopDB).Collection("orders")
-	n, err := orders.EstimatedDocumentCount(ctx)
-	if err != nil || n == 0 {
-		b.Fatalf("%s.orders is empty or unreadable (%v); seed it with cmd/gendata first", *shopDB, err)
+	orders, cleanup := freshCollection(ctx, client, label)
+	b.Cleanup(func() {
+		cleanup()
+		_ = client.Disconnect(context.Background())
+	})
+	docs := shopdata.Orders(n)
+	const batch = 1000
+	for i := 0; i < len(docs); i += batch {
+		chunk := make([]interface{}, 0, batch)
+		for _, doc := range docs[i:min(i+batch, len(docs))] {
+			chunk = append(chunk, doc)
+		}
+		if _, err := orders.InsertMany(ctx, chunk, options.InsertMany().SetOrdered(false)); err != nil {
+			b.Fatalf("seed orders: %v", err)
+		}
 	}
-	return client, orders, ctx
+	if _, err := orders.Indexes().CreateMany(ctx, shopdata.OrderIndexes()); err != nil {
+		b.Fatalf("index orders: %v", err)
+	}
+	return orders, ctx
 }
 
 // serverCPU returns the target process's user+system CPU time, or 0 when no
@@ -110,7 +125,7 @@ func (m *compressionMetrics) report() {
 
 // BenchmarkCompression_FindAllOrders streams every order: large replies.
 func BenchmarkCompression_FindAllOrders(b *testing.B) {
-	_, orders, ctx := withShopOrders(b)
+	orders, ctx := withSeededOrders(b, "compression_findall", shopdata.DefaultOrders)
 	m := startCompressionMetrics(b)
 	for i := 0; i < b.N; i++ {
 		start := time.Now()
@@ -133,33 +148,27 @@ func BenchmarkCompression_FindAllOrders(b *testing.B) {
 // BenchmarkCompression_InsertManyOrders inserts 1,000 copies of real orders per
 // op into a scratch collection: large requests.
 func BenchmarkCompression_InsertManyOrders(b *testing.B) {
-	client, orders, ctx := withShopOrders(b)
-	cursor, err := orders.Find(ctx, bson.D{})
+	ctx := context.Background()
+	client, err := connect(ctx)
 	if err != nil {
-		b.Fatalf("load orders: %v", err)
-	}
-	var batch []interface{}
-	var batchBytes int64
-	for len(batch) < 1000 && cursor.Next(ctx) {
-		var doc bson.D
-		if err := bson.Unmarshal(cursor.Current, &doc); err != nil {
-			b.Fatalf("decode order: %v", err)
-		}
-		withoutID := make(bson.D, 0, len(doc))
-		for _, e := range doc {
-			if e.Key != "_id" {
-				withoutID = append(withoutID, e)
-			}
-		}
-		batch = append(batch, withoutID)
-		batchBytes += int64(len(cursor.Current))
-	}
-	_ = cursor.Close(ctx)
-	if len(batch) == 0 {
-		b.Fatal("no orders to insert")
+		b.Fatalf("connect: %v", err)
 	}
 	scratch, cleanup := freshCollection(ctx, client, "compression_insertmany")
-	b.Cleanup(cleanup)
+	b.Cleanup(func() {
+		cleanup()
+		_ = client.Disconnect(context.Background())
+	})
+	var batch []interface{}
+	var batchBytes int64
+	for _, order := range shopdata.Orders(1000) {
+		raw, err := bson.Marshal(order)
+		if err != nil {
+			b.Fatalf("marshal order: %v", err)
+		}
+		batchBytes += int64(len(raw))
+		// Without _id, so every insert gets fresh ids.
+		batch = append(batch, order[1:])
+	}
 
 	m := startCompressionMetrics(b)
 	for i := 0; i < b.N; i++ {
@@ -173,11 +182,12 @@ func BenchmarkCompression_InsertManyOrders(b *testing.B) {
 	m.report()
 }
 
-// BenchmarkCompression_PointRead fetches one order by its indexed orderNumber:
-// small messages, where compression only adds overhead.
+// BenchmarkCompression_PointRead fetches one order by its orderNumber, which
+// cmd/gendata does not index: small messages, where compression only adds
+// overhead.
 func BenchmarkCompression_PointRead(b *testing.B) {
-	_, orders, ctx := withShopOrders(b)
-	n, _ := orders.EstimatedDocumentCount(ctx)
+	orders, ctx := withSeededOrders(b, "compression_pointread", shopdata.DefaultOrders)
+	n := int64(shopdata.DefaultOrders)
 	r := rand.New(rand.NewSource(*dataSeed))
 	m := startCompressionMetrics(b)
 	for i := 0; i < b.N; i++ {
