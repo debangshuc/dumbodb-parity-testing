@@ -261,6 +261,28 @@ func (c *Conn) RunChecksummedCommand(cmd interface{}, checksum Checksum, compres
 	return reply, err
 }
 
+// RunRawOpMsg sends payload, the flag bits and sections of an OP_MSG, under a
+// valid header, so tests can send messages a driver would refuse to build.
+func (c *Conn) RunRawOpMsg(payload []byte) (bson.M, error) {
+	c.reqID++
+	const headerLen = 16
+	out := make([]byte, 0, headerLen+len(payload))
+	out = appendI32(out, int32(headerLen+len(payload)))
+	out = appendI32(out, c.reqID)
+	out = appendI32(out, 0) // responseTo
+	out = appendI32(out, opMsg)
+	out = append(out, payload...)
+
+	if _, err := c.c.Write(out); err != nil {
+		return nil, fmt.Errorf("write: %w", err)
+	}
+	c.traffic.Requests++
+	c.traffic.RequestLogicalBytes += int64(len(out))
+	c.traffic.RequestWireBytes += int64(len(out))
+	reply, _, err := c.readCommandReply()
+	return reply, err
+}
+
 func compress(body []byte, compressor byte) ([]byte, error) {
 	switch compressor {
 	case CompressorNoop:
@@ -296,6 +318,11 @@ func decompress(payload []byte, compressor byte) ([]byte, error) {
 		return io.ReadAll(reader)
 	}
 	return nil, fmt.Errorf("unsupported reply compressor id %d", compressor)
+}
+
+// ReadReply reads the next OP_MSG reply, such as a further exhaust response.
+func (c *Conn) ReadReply() (bson.M, uint32, error) {
+	return c.readCommandReply()
 }
 
 func (c *Conn) readCommandReply() (bson.M, uint32, error) {
