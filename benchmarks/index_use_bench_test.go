@@ -85,21 +85,42 @@ func withIndexUseCollectionN(b *testing.B, label string, n int, opts *options.In
 		cleanup()
 		_ = client.Disconnect(context.Background())
 	})
+	if err := insertIndexUseDocs(ctx, col, n, docOf); err != nil {
+		b.Fatalf("seed: %v", err)
+	}
+	if _, err := col.Indexes().CreateOne(ctx, mongo.IndexModel{Keys: keys, Options: opts.SetName("idx")}); err != nil {
+		b.Fatalf("create index %v: %v", keys, err)
+	}
+	return col, ctx, isDumboDB(ctx, client)
+}
+
+func insertIndexUseDocs(ctx context.Context, col *mongo.Collection, n int, docOf func(i int) bson.D) error {
 	const batch = 1000
 	buf := make([]interface{}, 0, batch)
 	for i := 0; i < n; i++ {
 		buf = append(buf, docOf(i))
 		if len(buf) == batch || i == n-1 {
 			if _, err := col.InsertMany(ctx, buf, options.InsertMany().SetOrdered(false)); err != nil {
-				b.Fatalf("seed: %v", err)
+				return err
 			}
 			buf = buf[:0]
 		}
 	}
-	if _, err := col.Indexes().CreateOne(ctx, mongo.IndexModel{Keys: keys, Options: opts.SetName("idx")}); err != nil {
-		b.Fatalf("create index %v: %v", keys, err)
+	return nil
+}
+
+// reseedEvery reinserts the fixture off the clock once every document has
+// been deleted, so deletes always find a document.
+func reseedEvery(b *testing.B, ctx context.Context, col *mongo.Collection, i int) {
+	b.Helper()
+	if i == 0 || i%indexUseDocs != 0 {
+		return
 	}
-	return col, ctx, isDumboDB(ctx, client)
+	b.StopTimer()
+	if err := insertIndexUseDocs(ctx, col, indexUseDocs, indexUseDoc); err != nil {
+		b.Fatalf("reseed: %v", err)
+	}
+	b.StartTimer()
 }
 
 // isDumboDB reports whether the target is DumboDB, which names its storage
@@ -993,6 +1014,7 @@ func BenchmarkIndexUse_DeleteOneByIndex_10K(b *testing.B) {
 	}}})
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
+		reseedEvery(b, ctx, col, i)
 		if _, err := col.DeleteOne(ctx, eqOn("k")(i%indexUseDocs)); err != nil {
 			b.Fatalf("DeleteOne: %v", err)
 		}
@@ -1219,17 +1241,17 @@ func BenchmarkIndexUse_UpdateIndexedDotted_10K(b *testing.B) {
 }
 
 // Deletes by _id remove each document's entries from a through-array index.
-// Past indexUseDocs iterations the deletes find nothing.
 func BenchmarkIndexUse_DeleteIndexed_10K(b *testing.B) {
 	col, ctx, _ := withIndexUseCollection(b, "iu_del_idx", skuKey)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
+		reseedEvery(b, ctx, col, i)
 		if _, err := col.DeleteOne(ctx, bson.D{{Key: "_id", Value: int32(i % indexUseDocs)}}); err != nil {
 			b.Fatalf("DeleteOne: %v", err)
 		}
 	}
 	b.StopTimer()
-	last := min(b.N, indexUseDocs) - 1
+	last := (b.N - 1) % indexUseDocs
 	requireIndexedCount(b, ctx, col, bson.D{{Key: "items.sku", Value: fmt.Sprintf("sku-%d-1", last)}}, 0)
 }
 
