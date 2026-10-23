@@ -172,6 +172,7 @@ func BenchmarkCompression_InsertManyOrders(b *testing.B) {
 
 	m := startCompressionMetrics(b)
 	for i := 0; i < b.N; i++ {
+		clearEvery(b, ctx, scratch, i, insertResetDocs/len(batch), bson.D{})
 		start := time.Now()
 		if _, err := scratch.InsertMany(ctx, batch); err != nil {
 			b.Fatalf("insertMany: %v", err)

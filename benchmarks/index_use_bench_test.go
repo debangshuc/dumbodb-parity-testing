@@ -1022,6 +1022,7 @@ func BenchmarkIndexUse_UpsertUnique_10K(b *testing.B) {
 	opts := options.Update().SetUpsert(true)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
+		clearEvery(b, ctx, col, i, insertOneResetIts, bson.D{{Key: "k", Value: bson.D{{Key: "$gte", Value: indexUseDocs * 3}}}})
 		if _, err := col.UpdateOne(ctx, eqOn("k")(indexUseDocs*3+i), setTouched(i), opts); err != nil {
 			b.Fatalf("UpdateOne upsert: %v", err)
 		}
@@ -1168,6 +1169,7 @@ func benchmarkIndexedInsert(b *testing.B, label string, keys bson.D, unique bool
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
+		clearEvery(b, ctx, col, i, insertOneResetIts, bson.D{})
 		if _, err := col.InsertOne(ctx, indexUseDoc(i)); err != nil {
 			b.Fatalf("InsertOne: %v", err)
 		}

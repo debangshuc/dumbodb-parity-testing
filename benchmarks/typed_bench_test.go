@@ -29,6 +29,7 @@ func benchmarkInsertOneTypedRealisticAt(b *testing.B, size docSize) {
 	r := rand.New(rand.NewSource(*dataSeed))
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
+		clearEvery(b, ctx, col, i, insertOneResetIts, bson.D{})
 		doc := makeTypedRealisticDoc(r, i, size)
 		if _, err := col.InsertOne(ctx, doc); err != nil {
 			b.Fatalf("InsertOne: %v", err)
@@ -115,6 +116,7 @@ func benchmarkInsertOneTypedExtremeAt(b *testing.B, size docSize) {
 	r := rand.New(rand.NewSource(*dataSeed))
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
+		clearEvery(b, ctx, col, i, insertOneResetIts, bson.D{})
 		doc := makeTypedExtremeDoc(r, i, size)
 		if _, err := col.InsertOne(ctx, doc); err != nil {
 			b.Fatalf("InsertOne: %v", err)

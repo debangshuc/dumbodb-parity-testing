@@ -38,6 +38,7 @@ func benchmarkInsertOneAt(b *testing.B, label string, size docSize) {
 	r := rand.New(rand.NewSource(*dataSeed))
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
+		clearEvery(b, ctx, col, i, insertOneResetIts, bson.D{})
 		doc := makeDoc(r, i, size)
 		doc[0].Value = fmt.Sprintf("iter-%d", i)
 		if _, err := col.InsertOne(ctx, doc); err != nil {
