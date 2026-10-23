@@ -42,7 +42,8 @@ func benchmarkPointLookupScaled(b *testing.B, n int) {
 
 func benchmarkPointLookupScaledIndexed(b *testing.B, n int) {
 	col, ctx := withSeededCollection(b, fmt.Sprintf("pointlookup_%d_idx", n), n, sizeSmall)
-	createIndex(b, ctx, col, bson.D{{Key: "i", Value: 1}})
+	idx := createIndex(b, ctx, col, bson.D{{Key: "i", Value: 1}})
+	requireIndexed(b, ctx, col, findCmd(col, bson.D{{Key: "i", Value: n / 2}}, nil, 0), idx, n, mustUseIndex)
 	assertPointLookup(b, ctx, col, n)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

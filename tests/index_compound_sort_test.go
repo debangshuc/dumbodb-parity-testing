@@ -1,0 +1,111 @@
+// Copyright 2026 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package tests
+
+import (
+	"context"
+	"testing"
+
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
+
+	"github.com/dolthub/dumbodb-parity-testing/harness"
+)
+
+// When the filter binds a compound index's leading fields by equality, the
+// scan already yields the next field in order: MongoDB sorts on it without a
+// SORT stage and a limit stops the scan early.
+
+const compoundSortDocs = 1000
+
+func compoundSortSetup(keys bson.D) func(context.Context, *mongo.Collection) error {
+	return func(ctx context.Context, col *mongo.Collection) error {
+		docs := make([]interface{}, 0, compoundSortDocs)
+		for i := 0; i < compoundSortDocs; i++ {
+			docs = append(docs, bson.D{
+				{Key: "_id", Value: int32(i)},
+				{Key: "grp", Value: int32(i % 4)},
+				{Key: "k", Value: int32((i * 7) % compoundSortDocs)},
+			})
+		}
+		if _, err := col.InsertMany(ctx, docs); err != nil {
+			return err
+		}
+		return createIndex(ctx, col, keys)
+	}
+}
+
+func TestIndex_CompoundEqualityPrefixSort(t *testing.T) {
+	ascIdx := bson.D{{Key: "grp", Value: 1}, {Key: "k", Value: 1}}
+	descIdx := bson.D{{Key: "grp", Value: 1}, {Key: "k", Value: -1}}
+	eq := bson.D{{Key: "grp", Value: int32(2)}}
+	asc := bson.D{{Key: "k", Value: 1}}
+	desc := bson.D{{Key: "k", Value: -1}}
+	for _, tc := range []struct {
+		name    string
+		keys    bson.D
+		filter  bson.D
+		sort    bson.D
+		limit   int64
+		support harness.DumboDBSupport
+	}{
+		{"AscLimit", ascIdx, eq, asc, 5, harness.DumboDBFull},
+		{"DescLimit", ascIdx, eq, desc, 5, harness.DumboDBFull},
+		{"DescIndexDescLimit", descIdx, eq, desc, 5, harness.DumboDBFull},
+		{"DescIndexAscLimit", descIdx, eq, asc, 5, harness.DumboDBFull},
+		{"AscNoLimit", ascIdx, eq, asc, 0, harness.DumboDBFull},
+		{"SortFieldRange", bson.D{{Key: "k", Value: 1}}, bson.D{{Key: "k", Value: bson.D{{Key: "$gte", Value: int32(100)}, {Key: "$lt", Value: int32(400)}}}}, desc, 5, harness.DumboDBFull},
+		{"SortFieldIn", bson.D{{Key: "k", Value: 1}}, bson.D{{Key: "k", Value: bson.D{{Key: "$in", Value: bson.A{int32(500), int32(3), int32(70), int32(9)}}}}}, asc, 2, harness.DumboDBFull},
+		// The index keys are sorted before fetching.
+		{"RangePrefixSorts", ascIdx, bson.D{{Key: "grp", Value: bson.D{{Key: "$gte", Value: int32(2)}}}}, asc, 5, harness.DumboDBFull},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			harness.PairTest(t, harness.TestCase{
+				Name:    "Index_CompoundEqualityPrefixSort_" + tc.name,
+				Support: tc.support,
+				Setup:   compoundSortSetup(tc.keys),
+				Run: func(ctx context.Context, col *mongo.Collection) (interface{}, error) {
+					opts := options.Find().SetSort(tc.sort).SetProjection(bson.D{{Key: "_id", Value: 1}})
+					cmd := bson.D{{Key: "find", Value: col.Name()}, {Key: "filter", Value: tc.filter}, {Key: "sort", Value: tc.sort}}
+					if tc.limit > 0 {
+						opts.SetLimit(tc.limit)
+						cmd = append(cmd, bson.E{Key: "limit", Value: int32(tc.limit)})
+					}
+					cur, err := col.Find(ctx, tc.filter, opts)
+					if err != nil {
+						return nil, err
+					}
+					var docs []bson.D
+					if err := cur.All(ctx, &docs); err != nil {
+						return nil, err
+					}
+					explain, err := explainRunExplain(ctx, col, cmd, "executionStats")
+					if err != nil {
+						return nil, err
+					}
+					critical := explainExtractCritical(explain)
+					return bson.D{
+						{Key: "n", Value: len(docs)},
+						{Key: "first", Value: firstIDs(docs, 5)},
+						{Key: "winningPlan", Value: critical.Map()["winningPlan"]},
+						{Key: "nReturned", Value: lookupStat(critical, "nReturned")},
+						{Key: "docsExamined", Value: lookupStat(critical, "totalDocsExamined")},
+					}, nil
+				},
+			})
+		})
+	}
+}

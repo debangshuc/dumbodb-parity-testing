@@ -19,11 +19,60 @@ import (
 // comparable across benchmarks) and BEFORE b.ResetTimer() (so index-build
 // time doesn't count against the op under test).
 
-func createIndex(b *testing.B, ctx context.Context, col *mongo.Collection, keys bson.D) {
+// createIndex creates an index on keys and returns its name.
+func createIndex(b *testing.B, ctx context.Context, col *mongo.Collection, keys bson.D) string {
 	b.Helper()
-	if _, err := col.Indexes().CreateOne(ctx, mongo.IndexModel{Keys: keys}); err != nil {
+	name, err := col.Indexes().CreateOne(ctx, mongo.IndexModel{Keys: keys})
+	if err != nil {
 		b.Fatalf("create index %v: %v", keys, err)
 	}
+	return name
+}
+
+// idIndex names the primary index; creating {_id: 1} again leaves it in place.
+const idIndex = "_id_"
+
+var (
+	idLookupExplainGap    = indexUseExpectation{knownDumboGap: "workspace-edl: explain reports COLLSCAN for _id lookups"}
+	lookupForeignIndexGap = indexUseExpectation{knownDumboGap: "workspace-0sn: explain omits the $lookup foreign index"}
+	halfCollectionCapGap  = indexUseExpectation{knownDumboGap: "workspace-fep: a range over half the collection is scanned, not read through the index"}
+)
+
+// requireIndexed fails b unless inner, run on col of collDocs documents, uses
+// the index named idx.
+func requireIndexed(b *testing.B, ctx context.Context, col *mongo.Collection, inner bson.D, idx string, collDocs int, exp indexUseExpectation) {
+	b.Helper()
+	requireIndexUseOf(b, ctx, col, isDumboDB(ctx, col.Database().Client()), inner, idx, collDocs, exp)
+}
+
+func updateCmd(col *mongo.Collection, filter bson.D, multi bool) bson.D {
+	return bson.D{{Key: "update", Value: col.Name()}, {Key: "updates", Value: bson.A{bson.D{
+		{Key: "q", Value: filter},
+		{Key: "u", Value: bson.D{{Key: "$set", Value: bson.D{{Key: "touched", Value: 0}}}}},
+		{Key: "multi", Value: multi},
+	}}}}
+}
+
+func deleteCmd(col *mongo.Collection, filter bson.D, limit int) bson.D {
+	return bson.D{{Key: "delete", Value: col.Name()}, {Key: "deletes", Value: bson.A{bson.D{
+		{Key: "q", Value: filter}, {Key: "limit", Value: limit},
+	}}}}
+}
+
+func aggregateCmd(col *mongo.Collection, pipeline bson.A) bson.D {
+	return bson.D{{Key: "aggregate", Value: col.Name()}, {Key: "pipeline", Value: pipeline}, {Key: "cursor", Value: bson.D{}}}
+}
+
+// countDocumentsCmd is the aggregate the driver sends for CountDocuments.
+func countDocumentsCmd(col *mongo.Collection, filter bson.D) bson.D {
+	return aggregateCmd(col, bson.A{
+		bson.D{{Key: "$match", Value: filter}},
+		bson.D{{Key: "$group", Value: bson.D{{Key: "_id", Value: 1}, {Key: "n", Value: bson.D{{Key: "$sum", Value: 1}}}}}},
+	})
+}
+
+func distinctCmd(col *mongo.Collection, field string) bson.D {
+	return bson.D{{Key: "distinct", Value: col.Name()}, {Key: "key", Value: field}, {Key: "query", Value: bson.D{}}}
 }
 
 // BenchmarkFindOne_ById_Indexed is the explicit-index control: _id already
@@ -32,6 +81,7 @@ func createIndex(b *testing.B, ctx context.Context, col *mongo.Collection, keys 
 func BenchmarkFindOne_ById_Indexed(b *testing.B) {
 	col, ctx := withSeededCollection(b, "findone_idx", benchDatasetSize, benchDocSize)
 	createIndex(b, ctx, col, bson.D{{Key: "_id", Value: 1}})
+	requireIndexed(b, ctx, col, findCmd(col, bson.D{{Key: "_id", Value: benchDatasetSize / 2}}, nil, 1), idIndex, benchDatasetSize, idLookupExplainGap)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		id := i % benchDatasetSize
@@ -44,7 +94,8 @@ func BenchmarkFindOne_ById_Indexed(b *testing.B) {
 
 func BenchmarkFind_FilterEq_Indexed(b *testing.B) {
 	col, ctx := withSeededCollection(b, "findeq_idx", benchDatasetSize, benchDocSize)
-	createIndex(b, ctx, col, bson.D{{Key: "grp", Value: 1}})
+	idx := createIndex(b, ctx, col, bson.D{{Key: "grp", Value: 1}})
+	requireIndexed(b, ctx, col, findCmd(col, bson.D{{Key: "grp", Value: 5}}, nil, 0), idx, benchDatasetSize, mustUseIndex)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		cur, err := col.Find(ctx, bson.D{{Key: "grp", Value: i % 10}})
@@ -60,13 +111,12 @@ func BenchmarkFind_FilterEq_Indexed(b *testing.B) {
 
 func BenchmarkFind_FilterRange_Indexed(b *testing.B) {
 	col, ctx := withSeededCollection(b, "findrange_idx", benchDatasetSize, benchDocSize)
-	createIndex(b, ctx, col, bson.D{{Key: "i", Value: 1}})
+	idx := createIndex(b, ctx, col, bson.D{{Key: "i", Value: 1}})
+	filter := bson.D{{Key: "i", Value: bson.D{{Key: "$gte", Value: 100}, {Key: "$lt", Value: 200}}}}
+	requireIndexed(b, ctx, col, findCmd(col, filter, nil, 0), idx, benchDatasetSize, mustUseIndex)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		cur, err := col.Find(ctx, bson.D{{Key: "i", Value: bson.D{
-			{Key: "$gte", Value: 100},
-			{Key: "$lt", Value: 200},
-		}}})
+		cur, err := col.Find(ctx, filter)
 		if err != nil {
 			b.Fatalf("Find: %v", err)
 		}
@@ -82,6 +132,7 @@ func BenchmarkFind_FilterRange_Indexed(b *testing.B) {
 func BenchmarkUpdateOne_Indexed(b *testing.B) {
 	col, ctx := withSeededCollection(b, "updateone_idx", benchDatasetSize, benchDocSize)
 	createIndex(b, ctx, col, bson.D{{Key: "_id", Value: 1}})
+	requireIndexed(b, ctx, col, updateCmd(col, bson.D{{Key: "_id", Value: benchDatasetSize / 2}}, false), idIndex, benchDatasetSize, idLookupExplainGap)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		id := i % benchDatasetSize
@@ -96,7 +147,8 @@ func BenchmarkUpdateOne_Indexed(b *testing.B) {
 
 func BenchmarkUpdateMany_Indexed(b *testing.B) {
 	col, ctx := withSeededCollection(b, "updatemany_idx", benchDatasetSize, benchDocSize)
-	createIndex(b, ctx, col, bson.D{{Key: "grp", Value: 1}})
+	idx := createIndex(b, ctx, col, bson.D{{Key: "grp", Value: 1}})
+	requireIndexed(b, ctx, col, updateCmd(col, bson.D{{Key: "grp", Value: 5}}, true), idx, benchDatasetSize, mustUseIndex)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, err := col.UpdateMany(ctx,
@@ -114,6 +166,7 @@ func BenchmarkUpdateMany_Indexed(b *testing.B) {
 func BenchmarkDeleteOne_Indexed(b *testing.B) {
 	col, ctx := withSeededCollection(b, "deleteone_idx", benchDatasetSize, benchDocSize)
 	createIndex(b, ctx, col, bson.D{{Key: "_id", Value: 1}})
+	requireIndexed(b, ctx, col, deleteCmd(col, bson.D{{Key: "_id", Value: benchDatasetSize / 2}}, 1), idIndex, benchDatasetSize, idLookupExplainGap)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		id := i % benchDatasetSize
@@ -133,7 +186,8 @@ func BenchmarkDeleteOne_Indexed(b *testing.B) {
 
 func BenchmarkDeleteMany_Indexed(b *testing.B) {
 	col, ctx := withSeededCollection(b, "deletemany_idx", benchDatasetSize, benchDocSize)
-	createIndex(b, ctx, col, bson.D{{Key: "grp", Value: 1}})
+	idx := createIndex(b, ctx, col, bson.D{{Key: "grp", Value: 1}})
+	requireIndexed(b, ctx, col, deleteCmd(col, bson.D{{Key: "grp", Value: 5}}, 0), idx, benchDatasetSize, mustUseIndex)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		grp := i % 10
@@ -161,7 +215,8 @@ func BenchmarkDeleteMany_Indexed(b *testing.B) {
 // shortcut and would not exercise the index.)
 func BenchmarkCountDocuments_Indexed(b *testing.B) {
 	col, ctx := withSeededCollection(b, "count_idx", benchDatasetSize, benchDocSize)
-	createIndex(b, ctx, col, bson.D{{Key: "grp", Value: 1}})
+	idx := createIndex(b, ctx, col, bson.D{{Key: "grp", Value: 1}})
+	requireIndexed(b, ctx, col, countDocumentsCmd(col, bson.D{{Key: "grp", Value: 5}}), idx, benchDatasetSize, mustUseIndex)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if _, err := col.CountDocuments(ctx, bson.D{{Key: "grp", Value: 5}}); err != nil {
@@ -172,7 +227,8 @@ func BenchmarkCountDocuments_Indexed(b *testing.B) {
 
 func BenchmarkDistinct_Indexed(b *testing.B) {
 	col, ctx := withSeededCollection(b, "distinct_idx", benchDatasetSize, benchDocSize)
-	createIndex(b, ctx, col, bson.D{{Key: "grp", Value: 1}})
+	idx := createIndex(b, ctx, col, bson.D{{Key: "grp", Value: 1}})
+	requireIndexed(b, ctx, col, distinctCmd(col, "grp"), idx, benchDatasetSize, mustUseIndex)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if _, err := col.Distinct(ctx, "grp", bson.D{}); err != nil {
@@ -183,7 +239,7 @@ func BenchmarkDistinct_Indexed(b *testing.B) {
 
 func BenchmarkAgg_MatchGroup_Indexed(b *testing.B) {
 	col, ctx := withSeededCollection(b, "agg_matchgroup_idx", benchDatasetSize, benchDocSize)
-	createIndex(b, ctx, col, bson.D{{Key: "grp", Value: 1}})
+	idx := createIndex(b, ctx, col, bson.D{{Key: "grp", Value: 1}})
 	pipeline := bson.A{
 		bson.D{{Key: "$match", Value: bson.D{{Key: "grp", Value: bson.D{{Key: "$gte", Value: 0}}}}}},
 		bson.D{{Key: "$group", Value: bson.D{
@@ -191,6 +247,7 @@ func BenchmarkAgg_MatchGroup_Indexed(b *testing.B) {
 			{Key: "n", Value: bson.D{{Key: "$sum", Value: 1}}},
 		}}},
 	}
+	requireIndexed(b, ctx, col, aggregateCmd(col, pipeline), idx, benchDatasetSize, halfCollectionCapGap)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		cur, err := col.Aggregate(ctx, pipeline)

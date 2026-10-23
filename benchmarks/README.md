@@ -25,6 +25,8 @@ filter, `UpdateOne`, `UpdateMany`, `ReplaceOne`, `DeleteOne`, `DeleteMany`,
 `CountDocuments`, `Distinct`.
 
 **Aggregation**: `$match + $group`, `$sort + $limit`, `$project`.
+`Agg_Sort_10K[_Indexed]` repeats `$sort + $limit` on 10K documents, the indexed
+variant with an index on the sort field.
 
 **Projection** (in `projection_bench_test.go`): `Find_Projection` returns
 `{i, tag}` from the 1K small-doc set; `Find_Projection_10KB` and
@@ -82,19 +84,50 @@ traversal visits two documents. These are at `_10K` `[_Indexed]`.
 
 **Index-use variants** (in `index_use_bench_test.go`): a query that silently
 falls back to a collection scan still returns correct results, so only latency
-shows it. Each `IndexUse_*` benchmark seeds 10K documents and, before timing,
+shows it. Each `IndexUse_*` benchmark seeds 10K documents (50K for the `_50K`
+variants of the core lookups and sorts, whose indexed latency should match the
+10K figure) and, before timing,
 runs the operation through `explain` (`executionStats`) and fails unless the
-winning plan has an `IXSCAN`, `COUNT_SCAN`, or `DISTINCT_SCAN` on the expected
-index and, for `find`, the documents examined stay under a tenth of the
-collection. The assertion runs against MongoDB as well, which validates it.
+winning plan has an index scan on the expected index and, for `find`, the
+documents examined stay within the results returned or a tenth of the
+collection, whichever is more. Explain plans separately from the command, so
+for reads the benchmark then runs the command itself and reads the change in
+`serverStatus` `metrics.queryExecutor.scanned` and `scannedObjects`: every
+document must come through an index key, and a `find`, or a pipeline of only
+`$match`, `$sort`, and `$limit`, must read no more documents than it returned
+or a tenth of the collection. A server without those
+counters skips this part. The assertion runs against MongoDB as well, which
+validates it.
 Covered: flat equality, range, and `$in`; compound prefix and full; dotted,
-deep dotted, and through-array equality, range, and `$in`; sort with limit;
-count; distinct; and unique inserts maintaining flat, dotted, and through-array
-indexes. DumboDB reports plan stages but no counts for count and distinct, so
-for those only the plan is checked and the timing carries the rest. A known
+deep dotted, and through-array equality, range, and `$in`; sort with limit,
+ascending and descending, on a dotted field, on a multikey index holding
+empty, nested, and multi-element arrays, and under an unindexed filter; sort
+without a limit across getMore batches;
+sort with limit on a compound index whose leading field is bound by equality,
+and by a range, where the keys are sorted before the fetch;
+plan choice between a filter's index and the sort's, both outcomes;
+aggregation `$match`, `$sort + $limit`, `$match + $sort + $limit`, and
+`$match + $group`; a hint by index name and by key pattern overriding the
+planner's choice, and a `$natural` hint forcing a collection scan; partial
+indexes with equality and range conditions, a sparse index, and a hint onto a
+sparse index; a range and a sorted limit on a collated index under the same
+collation; ranges covering just under and just over half the collection; `$or` across
+indexed fields; a projection covered by the index, which must read no
+documents; null equality; `$exists` on a sparse index; an anchored regex;
+updateOne, deleteOne, and findAndModify filtered on an index, and upserts
+against a unique index, each run once before timing to check its reads;
+count with equality, range, and dotted range; distinct, unfiltered and
+filtered on the distinct field or another indexed field; unique inserts maintaining flat, dotted, and through-array indexes;
+non-unique multikey inserts; updates moving a flat or dotted indexed value;
+and deletes removing through-array index entries, each followed by an
+index-only count proving the index reflects the change. A known
 DumboDB gap is declared with its tracking issue: it is logged while it persists
 and fails the benchmark once DumboDB starts using the index, so the expectation
 gets promoted.
+
+The same check runs before timing every `*_Indexed` benchmark above, against
+the index that benchmark creates. Joins check the foreign index; `GraphLookup`
+is unchecked because MongoDB's explain does not report its index use.
 
 ## Scope - deferred
 

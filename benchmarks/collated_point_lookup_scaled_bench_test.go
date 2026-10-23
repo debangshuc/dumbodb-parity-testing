@@ -39,14 +39,16 @@ func seedStringKeys(b *testing.B, ctx context.Context, col *mongo.Collection, n 
 	flush()
 }
 
-func createCollatedIndex(b *testing.B, ctx context.Context, col *mongo.Collection, coll *options.Collation) {
+func createCollatedIndex(b *testing.B, ctx context.Context, col *mongo.Collection, coll *options.Collation) string {
 	b.Helper()
-	if _, err := col.Indexes().CreateOne(ctx, mongo.IndexModel{
+	name, err := col.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys:    bson.D{{Key: "sk", Value: 1}},
 		Options: options.Index().SetCollation(coll),
-	}); err != nil {
+	})
+	if err != nil {
 		b.Fatalf("create collated index: %v", err)
 	}
+	return name
 }
 
 func collatedLookupFind(b *testing.B, ctx context.Context, col *mongo.Collection, coll *options.Collation, key string) int {
@@ -82,7 +84,10 @@ func benchmarkCollatedPointLookupScaledIndexed(b *testing.B, n int) {
 	coll := benchCollation()
 	col, ctx := withEmptyCollection(b, fmt.Sprintf("cpointlookup_%d_idx", n))
 	seedStringKeys(b, ctx, col, n)
-	createCollatedIndex(b, ctx, col, coll)
+	idx := createCollatedIndex(b, ctx, col, coll)
+	find := append(findCmd(col, bson.D{{Key: "sk", Value: fmt.Sprintf("k%07d", n/2)}}, nil, 0),
+		bson.E{Key: "collation", Value: bson.D{{Key: "locale", Value: coll.Locale}}})
+	requireIndexed(b, ctx, col, find, idx, n, mustUseIndex)
 	assertCollatedPointLookup(b, ctx, col, coll, n)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
