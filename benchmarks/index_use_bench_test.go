@@ -260,10 +260,13 @@ func requireIndexUseOf(b *testing.B, ctx context.Context, col *mongo.Collection,
 	}
 	checkExamined := collDocs > 0 && (inner[0].Key == "find" || inner[0].Key == "aggregate")
 	ok, why := s.usesIndex(idx, collDocs, checkExamined)
+	readsChecked := true
 	if ok && collDocs > 0 && readCommands[inner[0].Key] {
-		ok, why = indexedReads(b, ctx, col, inner, collDocs)
+		ok, why, readsChecked = indexedReads(b, ctx, col, inner, collDocs)
 	}
 	switch {
+	case ok && dumbo && exp.knownDumboGap != "" && !readsChecked:
+		b.Logf("known DumboDB gap (%s): explain looks indexed, but the server reports no queryExecutor counters to confirm the reads", exp.knownDumboGap)
 	case ok && dumbo && exp.knownDumboGap != "":
 		b.Fatalf("DumboDB now uses the index (%s); promote this benchmark to mustUseIndex", exp.knownDumboGap)
 	case !ok && dumbo && exp.knownDumboGap != "":
@@ -280,7 +283,8 @@ var readCommands = map[string]bool{"find": true, "aggregate": true, "count": tru
 // unchanged, read no more documents than it returned or a tenth of the
 // collDocs-document collection, whichever is more.
 // Unlike explain, which plans separately, this measures the command itself.
-func indexedReads(b *testing.B, ctx context.Context, col *mongo.Collection, inner bson.D, collDocs int) (bool, string) {
+// checked is false when the server reports no counters, so nothing was measured.
+func indexedReads(b *testing.B, ctx context.Context, col *mongo.Collection, inner bson.D, collDocs int) (ok bool, why string, checked bool) {
 	b.Helper()
 	r, err := readsOf(ctx, col, inner)
 	if err != nil {
@@ -289,12 +293,13 @@ func indexedReads(b *testing.B, ctx context.Context, col *mongo.Collection, inne
 	switch {
 	case !r.tracked:
 		b.Logf("server reports no queryExecutor counters; reads unchecked")
+		return true, "", false
 	case r.docs > r.keys:
-		return false, fmt.Sprintf("read %d docs but only %d index keys: some came from a collection scan", r.docs, r.keys)
+		return false, fmt.Sprintf("read %d docs but only %d index keys: some came from a collection scan", r.docs, r.keys), true
 	case returnsReadDocuments(inner) && r.docs > max(r.returned, int64(collDocs/10)):
-		return false, fmt.Sprintf("read %d of %d docs for %d results", r.docs, collDocs, r.returned)
+		return false, fmt.Sprintf("read %d of %d docs for %d results", r.docs, collDocs, r.returned), true
 	}
-	return true, ""
+	return true, "", true
 }
 
 // returnsReadDocuments reports whether cmd returns the documents it reads
