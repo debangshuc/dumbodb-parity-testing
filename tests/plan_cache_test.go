@@ -118,7 +118,7 @@ func sortedKeys(v interface{}) []string {
 func TestPlanCache_ExplainReportsHashesAndCachedWinner(t *testing.T) {
 	harness.PairTest(t, harness.TestCase{
 		Name:    "PlanCache_ExplainReportsHashesAndCachedWinner",
-		Support: harness.DumboDBXFail,
+		Support: harness.DumboDBFull,
 		Setup: func(ctx context.Context, col *mongo.Collection) error {
 			if err := planCacheSetup(ctx, col); err != nil {
 				return err
@@ -150,7 +150,7 @@ func TestPlanCache_ExplainReportsHashesAndCachedWinner(t *testing.T) {
 func TestPlanCache_StatsListTheCachedWinner(t *testing.T) {
 	harness.PairTest(t, harness.TestCase{
 		Name:    "PlanCache_StatsListTheCachedWinner",
-		Support: harness.DumboDBXFail,
+		Support: harness.DumboDBFull,
 		Setup:   planCacheSetup,
 		Run: func(ctx context.Context, col *mongo.Collection) (interface{}, error) {
 			before, err := planCacheStats(ctx, col)
@@ -184,7 +184,7 @@ func TestPlanCache_StatsListTheCachedWinner(t *testing.T) {
 func TestPlanCache_ClearByShapeOrCollection(t *testing.T) {
 	harness.PairTest(t, harness.TestCase{
 		Name:    "PlanCache_ClearByShapeOrCollection",
-		Support: harness.DumboDBXFail,
+		Support: harness.DumboDBFull,
 		Setup:   planCacheSetup,
 		Run: func(ctx context.Context, col *mongo.Collection) (interface{}, error) {
 			var steps bson.A
@@ -234,14 +234,14 @@ func TestPlanCache_ClearByShapeOrCollection(t *testing.T) {
 func TestPlanCache_MissingCollection(t *testing.T) {
 	harness.PairTest(t, harness.TestCase{
 		Name:    "PlanCache_ClearMissingCollection",
-		Support: harness.DumboDBXFail,
+		Support: harness.DumboDBFull,
 		Run: func(ctx context.Context, col *mongo.Collection) (interface{}, error) {
 			return planCacheClear(ctx, col.Database().Collection("missing"), bson.D{})
 		},
 	})
 	harness.PairTest(t, harness.TestCase{
 		Name:    "PlanCache_StatsMissingCollection",
-		Support: harness.DumboDBXFail,
+		Support: harness.DumboDBFull,
 		Run: func(ctx context.Context, col *mongo.Collection) (interface{}, error) {
 			return planCacheStats(ctx, col.Database().Collection("missing"))
 		},
