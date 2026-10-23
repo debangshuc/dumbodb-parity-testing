@@ -12,17 +12,20 @@ import (
 // documents almost all of each document is the payload, which the projection
 // discards.
 
-func benchmarkFindProjection(b *testing.B, label string, size docSize, n int, filter func(i int) bson.D, indexed bool) {
+func benchmarkFindProjection(b *testing.B, label string, size docSize, n int, filter func(i int) bson.D, index string, sort bson.D) {
 	col, ctx := withSeededCollection(b, label, n, size)
-	if indexed {
-		if _, err := col.Indexes().CreateOne(ctx, mongo.IndexModel{Keys: bson.D{{Key: "grp", Value: 1}}}); err != nil {
+	if index != "" {
+		if _, err := col.Indexes().CreateOne(ctx, mongo.IndexModel{Keys: bson.D{{Key: index, Value: 1}}}); err != nil {
 			b.Fatalf("CreateOne: %v", err)
 		}
 	}
-	projection := bson.D{{Key: "i", Value: 1}, {Key: "tag", Value: 1}}
+	opts := options.Find().SetProjection(bson.D{{Key: "i", Value: 1}, {Key: "tag", Value: 1}})
+	if sort != nil {
+		opts.SetSort(sort)
+	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		cur, err := col.Find(ctx, filter(i), options.Find().SetProjection(projection))
+		cur, err := col.Find(ctx, filter(i), opts)
 		if err != nil {
 			b.Fatalf("Find: %v", err)
 		}
@@ -39,19 +42,27 @@ func noFilter(int) bson.D { return bson.D{} }
 func grpFilter(i int) bson.D { return bson.D{{Key: "grp", Value: i % 10}} }
 
 func BenchmarkFind_Projection(b *testing.B) {
-	benchmarkFindProjection(b, "findproj", benchDocSize, benchDatasetSize, noFilter, false)
+	benchmarkFindProjection(b, "findproj", benchDocSize, benchDatasetSize, noFilter, "", nil)
 }
 
 func BenchmarkFind_Projection_10KB(b *testing.B) {
-	benchmarkFindProjection(b, "findproj_10kb", sizeLarge, datasetSizeFor(sizeLarge), noFilter, false)
+	benchmarkFindProjection(b, "findproj_10kb", sizeLarge, datasetSizeFor(sizeLarge), noFilter, "", nil)
 }
 
 func BenchmarkFind_Projection_FilterEq_10KB(b *testing.B) {
-	benchmarkFindProjection(b, "findproj_eq_10kb", sizeLarge, datasetSizeFor(sizeLarge), grpFilter, false)
+	benchmarkFindProjection(b, "findproj_eq_10kb", sizeLarge, datasetSizeFor(sizeLarge), grpFilter, "", nil)
 }
 
 func BenchmarkFind_Projection_FilterEq_10KB_Indexed(b *testing.B) {
-	benchmarkFindProjection(b, "findproj_eq_10kb_idx", sizeLarge, datasetSizeFor(sizeLarge), grpFilter, true)
+	benchmarkFindProjection(b, "findproj_eq_10kb_idx", sizeLarge, datasetSizeFor(sizeLarge), grpFilter, "grp", nil)
+}
+
+func BenchmarkFind_Projection_FilterEq_Sort_10KB_Indexed(b *testing.B) {
+	benchmarkFindProjection(b, "findproj_eq_sort_10kb_idx", sizeLarge, datasetSizeFor(sizeLarge), grpFilter, "grp", bson.D{{Key: "grp", Value: 1}})
+}
+
+func BenchmarkFind_Projection_Sort_10KB_Indexed(b *testing.B) {
+	benchmarkFindProjection(b, "findproj_sort_10kb_idx", sizeLarge, datasetSizeFor(sizeLarge), grpFilter, "i", bson.D{{Key: "i", Value: 1}})
 }
 
 func BenchmarkAgg_Project_10KB(b *testing.B) {
