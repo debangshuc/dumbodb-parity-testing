@@ -65,9 +65,35 @@ func maybeCommit(b *testing.B, ctx context.Context, col *mongo.Collection, i int
 //
 // Each benchmark seeds n typed-realistic documents (n picked by
 // datasetSizeFor for the requested size), then cycles _ids modulo n.
-// Iteration cycling means each doc is touched roughly b.N/n times; the
-// fixtures carry enough seed array entries and "removable" fields to
-// absorb several cycles before the operation degenerates to a no-op.
+// Iteration cycling means each doc is touched roughly b.N/n times;
+// restoreEvery resets what the benchmarks change every few passes, so an
+// operation never degenerates to a no-op or works on an ever-growing document.
+
+// restoreEvery runs restore off the clock every mutationRounds passes over the
+// n documents, so the arrays and fields the benchmarks change stay close to
+// the seeded fixture however long the benchmark runs. Five passes match the
+// five-element seed array: an ArrayShorten pass never pops an empty array.
+const mutationRounds = 5
+
+func restoreEvery(b *testing.B, i, n int, restore func() error) {
+	b.Helper()
+	if i == 0 || i%(n*mutationRounds) != 0 {
+		return
+	}
+	b.StopTimer()
+	if err := restore(); err != nil {
+		b.Fatalf("restore fixture: %v", err)
+	}
+	b.StartTimer()
+}
+
+// restoreArray resets the array at path in every document to the seed array.
+func restoreArray(ctx context.Context, col *mongo.Collection, path string) func() error {
+	return func() error {
+		_, err := col.UpdateMany(ctx, bson.D{}, bson.D{{Key: "$set", Value: bson.D{{Key: path, Value: mutationSeedArray()}}}})
+		return err
+	}
+}
 
 // updateMutationBenchN picks a dataset size for the mutation benchmarks.
 // Smaller than insert/find datasets because each seeded doc costs more
@@ -86,8 +112,7 @@ func updateMutationBenchN(size docSize) int {
 }
 
 // benchmarkArrayExtend runs $push iterations on an array at the requested
-// depth. Each iteration appends one element to the array; over b.N
-// iterations the targeted arrays accumulate elements.
+// depth. Each iteration appends one element to the array.
 func benchmarkArrayExtend(b *testing.B, size docSize, depth int) {
 	n := updateMutationBenchN(size)
 	col, ctx, ids := withSeededTypedRealistic(b, fmt.Sprintf("arrext_%s_d%d", size, depth), n, size)
@@ -95,6 +120,7 @@ func benchmarkArrayExtend(b *testing.B, size docSize, depth int) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		maybeCommit(b, ctx, col, i)
+		restoreEvery(b, i, n, restoreArray(ctx, col, path))
 		id := ids[i%n]
 		_, err := col.UpdateOne(ctx,
 			bson.D{{Key: "_id", Value: id}},
@@ -106,9 +132,7 @@ func benchmarkArrayExtend(b *testing.B, size docSize, depth int) {
 }
 
 // benchmarkArrayShorten runs $pop iterations on an array at the requested
-// depth. Each iteration removes one element from the array's tail. Once
-// the array empties, $pop becomes a no-op; that is part of the cost
-// model -- real workloads also do empty-array pops.
+// depth. Each iteration removes one element from the array's tail.
 func benchmarkArrayShorten(b *testing.B, size docSize, depth int) {
 	n := updateMutationBenchN(size)
 	col, ctx, ids := withSeededTypedRealistic(b, fmt.Sprintf("arrshrt_%s_d%d", size, depth), n, size)
@@ -116,6 +140,7 @@ func benchmarkArrayShorten(b *testing.B, size docSize, depth int) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		maybeCommit(b, ctx, col, i)
+		restoreEvery(b, i, n, restoreArray(ctx, col, path))
 		id := ids[i%n]
 		_, err := col.UpdateOne(ctx,
 			bson.D{{Key: "_id", Value: id}},
@@ -129,16 +154,23 @@ func benchmarkArrayShorten(b *testing.B, size docSize, depth int) {
 // benchmarkFieldInsert runs $set iterations that add a previously-absent
 // field to the document at the requested depth. The new field is uniquely
 // named per iteration so each call genuinely inserts rather than updates
-// an existing field. Over time the targeted parent document accumulates
-// many siblings; this is the natural cost of repeated inserts.
+// an existing field.
 func benchmarkFieldInsert(b *testing.B, size docSize, depth int) {
 	n := updateMutationBenchN(size)
 	col, ctx, ids := withSeededTypedRealistic(b, fmt.Sprintf("fldins_%s_d%d", size, depth), n, size)
+	var inserted bson.D
+	unsetInserted := func() error {
+		_, err := col.UpdateMany(ctx, bson.D{}, bson.D{{Key: "$unset", Value: inserted}})
+		inserted = nil
+		return err
+	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		maybeCommit(b, ctx, col, i)
+		restoreEvery(b, i, n, unsetInserted)
 		id := ids[i%n]
 		path := mutationPath(depth, fmt.Sprintf("ins_%d", i))
+		inserted = append(inserted, bson.E{Key: path, Value: ""})
 		_, err := col.UpdateOne(ctx,
 			bson.D{{Key: "_id", Value: id}},
 			bson.D{{Key: "$set", Value: bson.D{{Key: path, Value: int32(i)}}}})
