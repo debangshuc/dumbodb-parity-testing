@@ -233,9 +233,8 @@ func currentRunInfo(local bool) runInfo {
 	return info
 }
 
-// setupContainers brings both target servers up and waits for them to accept
-// connections. It short-circuits when containers are already running so the
-// investigation flow (`-f`, then re-run) stays fast.
+// prepareImages pulls the MongoDB image and builds or pulls the DumboDB image
+// that each benchmark's fresh containers run.
 func prepareImages(ctx context.Context) error {
 	if err := ensureMongoImage(ctx); err != nil {
 		return fmt.Errorf("pull %s: %w", mongoContainer.image, err)

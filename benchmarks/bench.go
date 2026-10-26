@@ -295,15 +295,15 @@ func makeTypedExtremeDoc(r *rand.Rand, i int, size docSize) bson.D {
 	return out
 }
 
-// mutationPath returns the dotted mongo path for a mutation at the
-// requested depth on the typed-realistic / typed-extreme fixtures.
-// suffix names the leaf field. Valid depths: 1, 3, 5.
 // mutationSeedArray is the array each typed-realistic fixture starts with at
 // every depth.
 func mutationSeedArray() bson.A {
 	return bson.A{int32(0), int32(1), int32(2), int32(3), int32(4)}
 }
 
+// mutationPath returns the dotted mongo path for a mutation at the
+// requested depth on the typed-realistic / typed-extreme fixtures.
+// suffix names the leaf field. Valid depths: 1, 3, 5.
 func mutationPath(depth int, suffix string) string {
 	switch depth {
 	case 1:

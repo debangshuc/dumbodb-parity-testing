@@ -44,7 +44,7 @@ func regexPrefixSetup(ctx context.Context, col *mongo.Collection) error {
 		"s05.",
 		"a.b",
 		"axb",
-		"été",
+		"\xc3\xa9t\xc3\xa9",
 		"line\ns050",
 		int32(5),
 		nil,
@@ -84,7 +84,7 @@ func TestIndex_RegexPrefix(t *testing.T) {
 		{"EscapedDot", re(`^a\.b`, ""), byID, 0},
 		{"OptionalLast", re("^s05?0", ""), byID, 0},
 		{"Exact", re("^s050$", ""), byID, 0},
-		{"Unicode", re("^ét", ""), byID, 0},
+		{"Unicode", re("^\xc3\xa9t", ""), byID, 0},
 		{"NoMatch", re("^zzz", ""), byID, 0},
 		{"SortLimit", re("^s0", ""), bson.D{{Key: "s", Value: -1}}, 3},
 	} {

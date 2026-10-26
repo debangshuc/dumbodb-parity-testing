@@ -145,7 +145,7 @@ func stopContainer(ctx context.Context, c container) {
 	if err := runDocker(ctx, io.Discard, "stop", c.name); err != nil {
 		fmt.Fprintf(os.Stderr, "    (stop failed: %v)\n", err)
 	}
-	if err := runDocker(ctx, io.Discard, "rm", c.name); err != nil {
+	if err := runDocker(ctx, io.Discard, "rm", "-v", c.name); err != nil {
 		fmt.Fprintf(os.Stderr, "    (rm failed: %v)\n", err)
 	}
 }
