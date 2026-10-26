@@ -774,7 +774,7 @@ func BenchmarkIndexUse_CollatedRange_10K(b *testing.B) {
 
 func BenchmarkIndexUse_CollatedSortLimit_10K(b *testing.B) {
 	benchmarkCollatedFind(b, "iu_coll_sort", func(int) bson.D { return bson.D{} },
-		bson.D{{Key: "s", Value: 1}}, 10, indexUseExpectation{knownDumboGap: "workspace-via: collated sorts never use the index"}, "")
+		bson.D{{Key: "s", Value: 1}}, 10, mustUseIndex, "")
 }
 
 // Ranges either side of half the collection: DumboDB's planner gives up on an

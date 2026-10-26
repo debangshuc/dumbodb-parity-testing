@@ -861,6 +861,49 @@ func TestCursor_CollationSort(t *testing.T) {
 	})
 }
 
+func TestCursor_CollationSortOnCollatedIndex(t *testing.T) {
+	frCA := &options.Collation{Locale: "fr_CA"}
+	harness.PairTest(t, harness.TestCase{
+		Name:    "Cursor_CollationSortOnCollatedIndex",
+		Support: harness.DumboDBFull,
+		Setup: func(ctx context.Context, col *mongo.Collection) error {
+			words := []interface{}{"cote", "cot\u00e9", "c\u00f4te", "c\u00f4t\u00e9", "Banana", "apple", "cherry", int32(7), 2.5, nil}
+			docs := make([]interface{}, 0, len(words))
+			for i, w := range words {
+				docs = append(docs, bson.D{{Key: "_id", Value: int32(i)}, {Key: "word", Value: w}})
+			}
+			if _, err := col.InsertMany(ctx, docs); err != nil {
+				return err
+			}
+			_, err := col.Indexes().CreateOne(ctx, mongo.IndexModel{Keys: bson.D{{Key: "word", Value: 1}}, Options: options.Index().SetCollation(frCA)})
+			return err
+		},
+		Run: func(ctx context.Context, col *mongo.Collection) (interface{}, error) {
+			out := bson.D{}
+			for _, tc := range []struct {
+				name  string
+				dir   int32
+				limit int64
+			}{{"asc", 1, 0}, {"desc", -1, 0}, {"ascLimit", 1, 4}, {"descLimit", -1, 4}} {
+				opts := options.Find().SetCollation(frCA).SetSort(bson.D{{Key: "word", Value: tc.dir}}).SetProjection(bson.D{{Key: "_id", Value: 1}})
+				if tc.limit > 0 {
+					opts.SetLimit(tc.limit)
+				}
+				cursor, err := col.Find(ctx, bson.D{}, opts)
+				if err != nil {
+					return nil, err
+				}
+				var results []bson.D
+				if err := cursor.All(ctx, &results); err != nil {
+					return nil, err
+				}
+				out = append(out, bson.E{Key: tc.name, Value: results})
+			}
+			return out, nil
+		},
+	})
+}
+
 func TestCursor_MultiBatch(t *testing.T) {
 	harness.PairTest(t, harness.TestCase{
 		Name:    "Cursor_MultiBatch",
