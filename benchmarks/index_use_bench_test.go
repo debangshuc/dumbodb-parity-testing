@@ -144,7 +144,6 @@ type indexUseExpectation struct {
 
 var (
 	mustUseIndex         = indexUseExpectation{}
-	orUnionGap           = indexUseExpectation{knownDumboGap: "workspace-yhk: $or scans the collection"}
 	coveredProjectionGap = indexUseExpectation{knownDumboGap: "workspace-3u3: covered projections fetch documents"}
 	nullEqualityGap      = indexUseExpectation{knownDumboGap: "workspace-4cp: null equality is not indexed"}
 	existsGap            = indexUseExpectation{knownDumboGap: "workspace-qxg: $exists does not use a sparse index"}
@@ -800,7 +799,7 @@ func BenchmarkIndexUse_OrUnion_10K(b *testing.B) {
 			bson.D{{Key: "grp", Value: int32((i + 1) % 1000)}},
 		}}}
 	}
-	requireIndexUse(b, ctx, col, dumbo, findCmd(col, filter(indexUseDocs/2), nil, 0), orUnionGap)
+	requireIndexUse(b, ctx, col, dumbo, findCmd(col, filter(indexUseDocs/2), nil, 0), mustUseIndex)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		runFind(b, ctx, col, filter(i%indexUseDocs), nil, 0)
