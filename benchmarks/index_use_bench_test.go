@@ -685,7 +685,7 @@ func BenchmarkIndexUse_PartialRange_10K(b *testing.B) {
 	lt100 := bson.D{{Key: "$lt", Value: int32(100)}}
 	benchmarkPartialIndex(b, "iu_partial_range", bson.D{{Key: "grp", Value: lt100}}, func(i int) bson.D {
 		return bson.D{{Key: "k", Value: int32((i%10)*1000 + i%100)}, {Key: "grp", Value: lt100}}
-	}, indexUseExpectation{knownDumboGap: "workspace-rl6: range partial conditions are not recognized"})
+	}, mustUseIndex)
 }
 
 // sparseDoc carries sp on one document in ten.
