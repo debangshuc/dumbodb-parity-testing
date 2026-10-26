@@ -85,21 +85,42 @@ func withIndexUseCollectionN(b *testing.B, label string, n int, opts *options.In
 		cleanup()
 		_ = client.Disconnect(context.Background())
 	})
+	if err := insertIndexUseDocs(ctx, col, n, docOf); err != nil {
+		b.Fatalf("seed: %v", err)
+	}
+	if _, err := col.Indexes().CreateOne(ctx, mongo.IndexModel{Keys: keys, Options: opts.SetName("idx")}); err != nil {
+		b.Fatalf("create index %v: %v", keys, err)
+	}
+	return col, ctx, isDumboDB(ctx, client)
+}
+
+func insertIndexUseDocs(ctx context.Context, col *mongo.Collection, n int, docOf func(i int) bson.D) error {
 	const batch = 1000
 	buf := make([]interface{}, 0, batch)
 	for i := 0; i < n; i++ {
 		buf = append(buf, docOf(i))
 		if len(buf) == batch || i == n-1 {
 			if _, err := col.InsertMany(ctx, buf, options.InsertMany().SetOrdered(false)); err != nil {
-				b.Fatalf("seed: %v", err)
+				return err
 			}
 			buf = buf[:0]
 		}
 	}
-	if _, err := col.Indexes().CreateOne(ctx, mongo.IndexModel{Keys: keys, Options: opts.SetName("idx")}); err != nil {
-		b.Fatalf("create index %v: %v", keys, err)
+	return nil
+}
+
+// reseedEvery reinserts the fixture off the clock once every document has
+// been deleted, so deletes always find a document.
+func reseedEvery(b *testing.B, ctx context.Context, col *mongo.Collection, i int) {
+	b.Helper()
+	if i == 0 || i%indexUseDocs != 0 {
+		return
 	}
-	return col, ctx, isDumboDB(ctx, client)
+	b.StopTimer()
+	if err := insertIndexUseDocs(ctx, col, indexUseDocs, indexUseDoc); err != nil {
+		b.Fatalf("reseed: %v", err)
+	}
+	b.StartTimer()
 }
 
 // isDumboDB reports whether the target is DumboDB, which names its storage
@@ -123,11 +144,9 @@ type indexUseExpectation struct {
 
 var (
 	mustUseIndex         = indexUseExpectation{}
-	orUnionGap           = indexUseExpectation{knownDumboGap: "workspace-yhk: $or scans the collection"}
 	coveredProjectionGap = indexUseExpectation{knownDumboGap: "workspace-3u3: covered projections fetch documents"}
 	nullEqualityGap      = indexUseExpectation{knownDumboGap: "workspace-4cp: null equality is not indexed"}
 	existsGap            = indexUseExpectation{knownDumboGap: "workspace-qxg: $exists does not use a sparse index"}
-	regexPrefixGap       = indexUseExpectation{knownDumboGap: "workspace-286: regex prefixes are not indexed"}
 )
 
 type explainSummary struct {
@@ -666,7 +685,7 @@ func BenchmarkIndexUse_PartialRange_10K(b *testing.B) {
 	lt100 := bson.D{{Key: "$lt", Value: int32(100)}}
 	benchmarkPartialIndex(b, "iu_partial_range", bson.D{{Key: "grp", Value: lt100}}, func(i int) bson.D {
 		return bson.D{{Key: "k", Value: int32((i%10)*1000 + i%100)}, {Key: "grp", Value: lt100}}
-	}, indexUseExpectation{knownDumboGap: "workspace-rl6: range partial conditions are not recognized"})
+	}, mustUseIndex)
 }
 
 // sparseDoc carries sp on one document in ten.
@@ -753,7 +772,7 @@ func BenchmarkIndexUse_CollatedRange_10K(b *testing.B) {
 
 func BenchmarkIndexUse_CollatedSortLimit_10K(b *testing.B) {
 	benchmarkCollatedFind(b, "iu_coll_sort", func(int) bson.D { return bson.D{} },
-		bson.D{{Key: "s", Value: 1}}, 10, indexUseExpectation{knownDumboGap: "workspace-via: collated sorts never use the index"}, "")
+		bson.D{{Key: "s", Value: 1}}, 10, mustUseIndex, "")
 }
 
 // Ranges either side of half the collection: DumboDB's planner gives up on an
@@ -779,7 +798,7 @@ func BenchmarkIndexUse_OrUnion_10K(b *testing.B) {
 			bson.D{{Key: "grp", Value: int32((i + 1) % 1000)}},
 		}}}
 	}
-	requireIndexUse(b, ctx, col, dumbo, findCmd(col, filter(indexUseDocs/2), nil, 0), orUnionGap)
+	requireIndexUse(b, ctx, col, dumbo, findCmd(col, filter(indexUseDocs/2), nil, 0), mustUseIndex)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		runFind(b, ctx, col, filter(i%indexUseDocs), nil, 0)
@@ -867,7 +886,7 @@ func BenchmarkIndexUse_RegexPrefix_10K(b *testing.B) {
 	filter := func(i int) bson.D {
 		return bson.D{{Key: "s", Value: primitive.Regex{Pattern: fmt.Sprintf("^s%03d", i%100)}}}
 	}
-	requireIndexUse(b, ctx, col, dumbo, findCmd(col, filter(50), nil, 0), regexPrefixGap)
+	requireIndexUse(b, ctx, col, dumbo, findCmd(col, filter(50), nil, 0), mustUseIndex)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		runFind(b, ctx, col, filter(i), nil, 0)
@@ -993,6 +1012,7 @@ func BenchmarkIndexUse_DeleteOneByIndex_10K(b *testing.B) {
 	}}})
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
+		reseedEvery(b, ctx, col, i)
 		if _, err := col.DeleteOne(ctx, eqOn("k")(i%indexUseDocs)); err != nil {
 			b.Fatalf("DeleteOne: %v", err)
 		}
@@ -1022,6 +1042,7 @@ func BenchmarkIndexUse_UpsertUnique_10K(b *testing.B) {
 	opts := options.Update().SetUpsert(true)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
+		clearEvery(b, ctx, col, i, insertOneResetIts, bson.D{{Key: "k", Value: bson.D{{Key: "$gte", Value: indexUseDocs * 3}}}})
 		if _, err := col.UpdateOne(ctx, eqOn("k")(indexUseDocs*3+i), setTouched(i), opts); err != nil {
 			b.Fatalf("UpdateOne upsert: %v", err)
 		}
@@ -1168,6 +1189,7 @@ func benchmarkIndexedInsert(b *testing.B, label string, keys bson.D, unique bool
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
+		clearEvery(b, ctx, col, i, insertOneResetIts, bson.D{})
 		if _, err := col.InsertOne(ctx, indexUseDoc(i)); err != nil {
 			b.Fatalf("InsertOne: %v", err)
 		}
@@ -1217,17 +1239,17 @@ func BenchmarkIndexUse_UpdateIndexedDotted_10K(b *testing.B) {
 }
 
 // Deletes by _id remove each document's entries from a through-array index.
-// Past indexUseDocs iterations the deletes find nothing.
 func BenchmarkIndexUse_DeleteIndexed_10K(b *testing.B) {
 	col, ctx, _ := withIndexUseCollection(b, "iu_del_idx", skuKey)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
+		reseedEvery(b, ctx, col, i)
 		if _, err := col.DeleteOne(ctx, bson.D{{Key: "_id", Value: int32(i % indexUseDocs)}}); err != nil {
 			b.Fatalf("DeleteOne: %v", err)
 		}
 	}
 	b.StopTimer()
-	last := min(b.N, indexUseDocs) - 1
+	last := (b.N - 1) % indexUseDocs
 	requireIndexedCount(b, ctx, col, bson.D{{Key: "items.sku", Value: fmt.Sprintf("sku-%d-1", last)}}, 0)
 }
 

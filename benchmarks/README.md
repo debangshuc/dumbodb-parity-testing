@@ -219,7 +219,7 @@ Flags:
 | `-dumbodb-src`     | `""` | If set, build DumboDB from this source directory via `benchmarks/Dockerfile.dumbodb` instead of pulling `-dumbodb-image` (env: `DUMBODB_SRC`). |
 | `-no-containers`   | `false` | Skip container management; expect servers already at `:27017` / `:27018` |
 | `-health-timeout`  | `60s` | How long to wait for each container to accept connections |
-| `-test-timeout`    | `10m` | `-timeout` passed to `go test`. |
+| `-test-timeout`    | `10m` | `-timeout` for each benchmark run. |
 | `-dumbodb-bin`, `-mongod-bin` | `""` | Run both targets as local processes instead of containers (set both) |
 | `-work-dir`        | temp dir | Server data and logs for `-dumbodb-bin`/`-mongod-bin`. On Linux the run fails if this is on tmpfs or ramfs. |
 | `-dumbodb-version`, `-mongodb-version` | from `--version` or the image | Version labels for the report |
@@ -242,8 +242,12 @@ copy.
 With `-dumbodb-src` set, `dumbodb-bench` runs the locally-built
 `dumbodb-bench:local` image instead. Both container names are fixed (not
 randomized) so the `-f` investigation workflow and any shell aliases you build
-on top can rely on them. If a container with the same name exists but is
-stopped/dead, the runner removes it and starts fresh.
+on top can rely on them.
+
+Each benchmark runs against fresh servers: the runner recreates both
+containers (or, with `-dumbodb-bin`/`-mongod-bin`, restarts both processes on
+empty data directories) before every benchmark, so no result depends on what
+ran before it. With `-no-containers` the servers are not restarted.
 
 ### Running a single target directly (bypassing the runner)
 

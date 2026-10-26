@@ -68,6 +68,10 @@ func TestIndex_CompoundEqualityPrefixSort(t *testing.T) {
 		{"DescIndexAscLimit", descIdx, eq, asc, 5, harness.DumboDBFull},
 		{"AscNoLimit", ascIdx, eq, asc, 0, harness.DumboDBFull},
 		{"SortFieldRange", bson.D{{Key: "k", Value: 1}}, bson.D{{Key: "k", Value: bson.D{{Key: "$gte", Value: int32(100)}, {Key: "$lt", Value: int32(400)}}}}, desc, 5, harness.DumboDBFull},
+		{"SortFieldRangeAsc", bson.D{{Key: "k", Value: 1}}, bson.D{{Key: "k", Value: bson.D{{Key: "$gte", Value: int32(100)}, {Key: "$lt", Value: int32(400)}}}}, asc, 5, harness.DumboDBFull},
+		{"SortFieldGteAsc", bson.D{{Key: "k", Value: 1}}, bson.D{{Key: "k", Value: bson.D{{Key: "$gte", Value: int32(990)}}}}, asc, 5, harness.DumboDBFull},
+		{"SortFieldGteDesc", bson.D{{Key: "k", Value: 1}}, bson.D{{Key: "k", Value: bson.D{{Key: "$gte", Value: int32(10)}}}}, desc, 5, harness.DumboDBFull},
+		{"SortFieldLtDesc", bson.D{{Key: "k", Value: 1}}, bson.D{{Key: "k", Value: bson.D{{Key: "$lt", Value: int32(7)}}}}, desc, 10, harness.DumboDBFull},
 		{"SortFieldIn", bson.D{{Key: "k", Value: 1}}, bson.D{{Key: "k", Value: bson.D{{Key: "$in", Value: bson.A{int32(500), int32(3), int32(70), int32(9)}}}}}, asc, 2, harness.DumboDBFull},
 		// The index keys are sorted before fetching.
 		{"RangePrefixSorts", ascIdx, bson.D{{Key: "grp", Value: bson.D{{Key: "$gte", Value: int32(2)}}}}, asc, 5, harness.DumboDBFull},
@@ -104,6 +108,51 @@ func TestIndex_CompoundEqualityPrefixSort(t *testing.T) {
 						{Key: "nReturned", Value: lookupStat(critical, "nReturned")},
 						{Key: "docsExamined", Value: lookupStat(critical, "totalDocsExamined")},
 					}, nil
+				},
+			})
+		})
+	}
+}
+
+func TestIndex_CompoundEqualityPrefixSortMixed(t *testing.T) {
+	setup := func(ctx context.Context, col *mongo.Collection) error {
+		values := []interface{}{int32(5), "b", bson.D{{Key: "x", Value: int32(2)}}, bson.D{{Key: "x", Value: int32(1)}}, nil, 2.5, "a", int64(9), true}
+		docs := make([]interface{}, 0, 200)
+		for i := 0; i < 200; i++ {
+			docs = append(docs, bson.D{{Key: "_id", Value: int32(i)}, {Key: "grp", Value: int32(i % 2)}, {Key: "odd", Value: i%3 == 0}, {Key: "k", Value: values[i%len(values)]}})
+		}
+		if _, err := col.InsertMany(ctx, docs); err != nil {
+			return err
+		}
+		return createIndex(ctx, col, bson.D{{Key: "grp", Value: 1}, {Key: "k", Value: 1}})
+	}
+	for _, tc := range []struct {
+		name   string
+		filter bson.D
+		sort   bson.D
+		limit  int64
+	}{
+		{"AscLimit", bson.D{{Key: "grp", Value: int32(1)}}, bson.D{{Key: "k", Value: 1}}, 30},
+		{"DescLimit", bson.D{{Key: "grp", Value: int32(0)}}, bson.D{{Key: "k", Value: -1}}, 60},
+		{"AscLimitSmall", bson.D{{Key: "grp", Value: int32(0)}}, bson.D{{Key: "k", Value: 1}}, 25},
+		{"ExtraPredicateDesc", bson.D{{Key: "grp", Value: int32(1)}, {Key: "odd", Value: true}}, bson.D{{Key: "k", Value: -1}}, 15},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			harness.PairTest(t, harness.TestCase{
+				Name:    "Index_CompoundEqualityPrefixSortMixed_" + tc.name,
+				Support: harness.DumboDBFull,
+				Setup:   setup,
+				Run: func(ctx context.Context, col *mongo.Collection) (interface{}, error) {
+					opts := options.Find().SetSort(tc.sort).SetProjection(bson.D{{Key: "_id", Value: 0}, {Key: "k", Value: 1}})
+					if tc.limit > 0 {
+						opts.SetLimit(tc.limit)
+					}
+					cur, err := col.Find(ctx, tc.filter, opts)
+					if err != nil {
+						return nil, err
+					}
+					var docs []bson.D
+					return docs, cur.All(ctx, &docs)
 				},
 			})
 		})

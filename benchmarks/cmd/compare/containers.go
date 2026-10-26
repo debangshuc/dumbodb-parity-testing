@@ -121,12 +121,12 @@ func startContainer(ctx context.Context, c container) error {
 		return nil
 	case "exited", "created", "dead":
 		fmt.Fprintf(os.Stderr, "==> removing stale container %s (state=%s)\n", c.name, state)
-		_ = runDocker(ctx, nil, "rm", "-f", c.name)
+		_ = runDocker(ctx, nil, "rm", "-f", "-v", c.name)
 	case "":
 		// no such container, fall through
 	default:
 		fmt.Fprintf(os.Stderr, "==> container %s in unexpected state %q - recreating\n", c.name, state)
-		_ = runDocker(ctx, nil, "rm", "-f", c.name)
+		_ = runDocker(ctx, nil, "rm", "-f", "-v", c.name)
 	}
 	args := []string{"run", "-d", "--name", c.name}
 	args = append(args, c.runArgs...)
@@ -145,7 +145,7 @@ func stopContainer(ctx context.Context, c container) {
 	if err := runDocker(ctx, io.Discard, "stop", c.name); err != nil {
 		fmt.Fprintf(os.Stderr, "    (stop failed: %v)\n", err)
 	}
-	if err := runDocker(ctx, io.Discard, "rm", c.name); err != nil {
+	if err := runDocker(ctx, io.Discard, "rm", "-v", c.name); err != nil {
 		fmt.Fprintf(os.Stderr, "    (rm failed: %v)\n", err)
 	}
 }

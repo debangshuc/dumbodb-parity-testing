@@ -192,7 +192,7 @@ func makeTypedRealisticDoc(r *rand.Rand, i int, size docSize) bson.D {
 		fmt.Sprintf("tag-%d", (i+1)%100),
 		fmt.Sprintf("tag-%d", (i+2)%100),
 	}
-	seedArr := bson.A{int32(0), int32(1), int32(2), int32(3), int32(4)}
+	seedArr := mutationSeedArray()
 
 	// Build the nested chain bottom-up: depth-5 target first, wrap.
 	d5 := bson.D{
@@ -293,6 +293,12 @@ func makeTypedExtremeDoc(r *rand.Rand, i int, size docSize) bson.D {
 	out = append(out, extras...)
 	out = append(out, doc[insertAt:]...)
 	return out
+}
+
+// mutationSeedArray is the array each typed-realistic fixture starts with at
+// every depth.
+func mutationSeedArray() bson.A {
+	return bson.A{int32(0), int32(1), int32(2), int32(3), int32(4)}
 }
 
 // mutationPath returns the dotted mongo path for a mutation at the

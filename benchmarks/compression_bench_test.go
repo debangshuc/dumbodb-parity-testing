@@ -105,6 +105,16 @@ func startCompressionMetrics(b *testing.B) *compressionMetrics {
 	return m
 }
 
+// offClock runs f with the benchmark timer stopped and leaves the server CPU
+// it uses out of server-cpu-ms/op.
+func (m *compressionMetrics) offClock(f func()) {
+	m.b.StopTimer()
+	before := serverCPU(m.b)
+	f()
+	m.cpuStart += serverCPU(m.b) - before
+	m.b.StartTimer()
+}
+
 func (m *compressionMetrics) report() {
 	m.b.StopTimer()
 	if m.bytes > 0 {
@@ -170,8 +180,16 @@ func BenchmarkCompression_InsertManyOrders(b *testing.B) {
 		batch = append(batch, order[1:])
 	}
 
+	clearInterval := insertResetDocs / len(batch)
 	m := startCompressionMetrics(b)
 	for i := 0; i < b.N; i++ {
+		if i > 0 && i%clearInterval == 0 {
+			m.offClock(func() {
+				if _, err := scratch.DeleteMany(ctx, bson.D{}); err != nil {
+					b.Fatalf("clear: %v", err)
+				}
+			})
+		}
 		start := time.Now()
 		if _, err := scratch.InsertMany(ctx, batch); err != nil {
 			b.Fatalf("insertMany: %v", err)

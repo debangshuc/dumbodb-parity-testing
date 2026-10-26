@@ -3,7 +3,8 @@
 //
 // The runner manages its own containers: by default it pulls
 // dolthub/dumbodb:latest and mongo:8.0, starts both, waits for readiness,
-// runs the benchmarks, then tears the containers down (unless -f is given).
+// runs each benchmark against freshly started servers, then tears the
+// containers down (unless -f is given).
 // Pass -dumbodb-src to opt into building DumboDB from a local source tree
 // instead (useful for benching unreleased commits).
 //
@@ -26,6 +27,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -49,7 +51,7 @@ var (
 	dumboSrc      = flag.String("dumbodb-src", envOr("DUMBODB_SRC", ""), "if set, build DumboDB from this source directory (using benchmarks/Dockerfile.dumbodb) instead of pulling -dumbodb-image")
 	noContainers  = flag.Bool("no-containers", false, "skip container management entirely (expects servers already reachable at the default ports)")
 	healthTimeout = flag.Duration("health-timeout", 60*time.Second, "how long to wait for each container to accept connections")
-	testTimeout   = flag.Duration("test-timeout", 10*time.Minute, "-timeout value passed to go test (caps the entire bench run; large-N benchmarks exceed the 10m default while seeding)")
+	testTimeout   = flag.Duration("test-timeout", 10*time.Minute, "-timeout for each benchmark run")
 
 	dumboBin  = flag.String("dumbodb-bin", "", "run this dumbodb binary as a local process instead of using containers (requires -mongod-bin)")
 	mongodBin = flag.String("mongod-bin", "", "run this mongod binary as a local process instead of using containers (requires -dumbodb-bin)")
@@ -108,8 +110,11 @@ func run() error {
 	info := currentRunInfo(local)
 
 	var dumboResults, mongoResults []result
-	var benchErr error
-	if local {
+	suite, cleanupSuite, benchErr := compileSuite()
+	defer cleanupSuite()
+	switch {
+	case benchErr != nil:
+	case local:
 		dir := *workDir
 		if dir == "" {
 			tmp, err := os.MkdirTemp("", "dumbodb-compare-")
@@ -123,11 +128,11 @@ func run() error {
 			return err
 		}
 		if benchErr = requireDiskBacked(dir); benchErr == nil {
-			dumboResults, mongoResults, benchErr = runLocalTargets(dir)
+			dumboResults, mongoResults, benchErr = runLocalTargets(dir, suite)
 		}
-	} else {
+	default:
 		var cleanup func()
-		dumboResults, mongoResults, cleanup, benchErr = runContainerTargets()
+		dumboResults, mongoResults, cleanup, benchErr = runContainerTargets(suite)
 		defer cleanup()
 	}
 
@@ -158,11 +163,13 @@ func run() error {
 	return benchErr
 }
 
-func runContainerTargets() (dumbo, mongo []result, cleanup func(), err error) {
+// runContainerTargets runs each benchmark against freshly created containers,
+// or against the already-running servers with -no-containers.
+func runContainerTargets(suite *benchSuite) (dumbo, mongo []result, cleanup func(), err error) {
 	ctx := context.Background()
 	cleanup = func() {}
 	if !*noContainers {
-		if err := setupContainers(ctx); err != nil {
+		if err := prepareImages(ctx); err != nil {
 			return nil, nil, cleanup, fmt.Errorf("container setup: %w", err)
 		}
 		// Teardown iff we're not keeping containers alive. Always runs even if
@@ -175,9 +182,27 @@ func runContainerTargets() (dumbo, mongo []result, cleanup func(), err error) {
 			}
 		}
 	}
-	dumbo, dumboErr := runTargetBench(ctx, "dumbodb", dumboContainer)
-	mongo, mongoErr := runTargetBench(ctx, "mongodb", mongoContainer)
-	return dumbo, mongo, cleanup, errors.Join(dumboErr, mongoErr)
+	var errs []error
+	for _, name := range suite.names {
+		for _, t := range []struct {
+			label   string
+			c       container
+			results *[]result
+		}{{"dumbodb", dumboContainer, &dumbo}, {"mongodb", mongoContainer, &mongo}} {
+			if !*noContainers {
+				if err := freshContainer(ctx, t.c); err != nil {
+					errs = append(errs, fmt.Errorf("%s %s: %w", t.label, name, err))
+					continue
+				}
+			}
+			res, err := runTargetBench(ctx, t.label, t.c, suite, name)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("%s %s: %w", t.label, name, err))
+			}
+			*t.results = append(*t.results, res...)
+		}
+	}
+	return dumbo, mongo, cleanup, errors.Join(errs...)
 }
 
 func currentRunInfo(local bool) runInfo {
@@ -208,29 +233,23 @@ func currentRunInfo(local bool) runInfo {
 	return info
 }
 
-// setupContainers brings both target servers up and waits for them to accept
-// connections. It short-circuits when containers are already running so the
-// investigation flow (`-f`, then re-run) stays fast.
-func setupContainers(ctx context.Context) error {
+// prepareImages pulls the MongoDB image and builds or pulls the DumboDB image
+// that each benchmark's fresh containers run.
+func prepareImages(ctx context.Context) error {
 	if err := ensureMongoImage(ctx); err != nil {
 		return fmt.Errorf("pull %s: %w", mongoContainer.image, err)
 	}
-	if err := prepareDumboImage(ctx); err != nil {
+	return prepareDumboImage(ctx)
+}
+
+// freshContainer replaces c with a new container, so its server starts with
+// empty data.
+func freshContainer(ctx context.Context, c container) error {
+	stopContainer(ctx, c)
+	if err := startContainer(ctx, c); err != nil {
 		return err
 	}
-	if err := startContainer(ctx, mongoContainer); err != nil {
-		return err
-	}
-	if err := startContainer(ctx, dumboContainer); err != nil {
-		return err
-	}
-	if err := waitHealthy(ctx, mongoContainer, *healthTimeout); err != nil {
-		return err
-	}
-	if err := waitHealthy(ctx, dumboContainer, *healthTimeout); err != nil {
-		return err
-	}
-	return nil
+	return waitHealthy(ctx, c, *healthTimeout)
 }
 
 // prepareDumboImage selects the DumboDB image based on the flags and ensures
@@ -314,7 +333,7 @@ func printKeepAliveBanner(w *os.File) {
 // reported against the first cut of this runner.
 //
 // When -no-containers is set, we trust the user and skip the verification.
-func runTargetBench(ctx context.Context, label string, c container) ([]result, error) {
+func runTargetBench(ctx context.Context, label string, c container, suite *benchSuite, name string) ([]result, error) {
 	if !*noContainers {
 		if state := containerState(ctx, c.name); state != "running" {
 			return nil, fmt.Errorf(
@@ -337,7 +356,7 @@ func runTargetBench(ctx context.Context, label string, c container) ([]result, e
 				label, c.name, c.hostURI, err, c.name)
 		}
 	}
-	return runBench(label, c.hostURI)
+	return suite.run(name, label, c.hostURI)
 }
 
 func stateOrMissing(s string) string {
@@ -347,23 +366,63 @@ func stateOrMissing(s string) string {
 	return s
 }
 
-// runBench invokes `go test -bench` against the given target and parses the
-// output. It returns one result per benchmark; when -count > 1 the last run
-// wins — Go's benchmark output is line-oriented so rolling up is trivial.
-func runBench(label, uri string) ([]result, error) {
-	cmd := exec.Command("go", "test",
-		*benchPkg,
-		"-run", "^$",
-		"-bench", *benchRegex,
-		"-benchtime", *benchTime,
-		"-count", strconv.Itoa(*count),
-		"-timeout", testTimeout.String(),
-		"-args",
+// benchSuite is the compiled benchmark binary and the benchmarks -bench selects.
+type benchSuite struct {
+	bin   string
+	dir   string
+	names []string
+}
+
+// compileSuite builds the benchmark package once and lists the benchmarks to
+// run, so each one can run on its own against a fresh server.
+func compileSuite() (*benchSuite, func(), error) {
+	dirOut, err := exec.Command("go", "list", "-f", "{{.Dir}}", *benchPkg).Output()
+	if err != nil {
+		return nil, func() {}, fmt.Errorf("go list %s: %w", *benchPkg, err)
+	}
+	tmp, err := os.MkdirTemp("", "compare-bench-")
+	if err != nil {
+		return nil, func() {}, err
+	}
+	cleanup := func() { _ = os.RemoveAll(tmp) }
+	suite := &benchSuite{bin: filepath.Join(tmp, "bench.test"), dir: strings.TrimSpace(string(dirOut))}
+	build := exec.Command("go", "test", "-c", "-o", suite.bin, *benchPkg)
+	build.Stdout, build.Stderr = os.Stderr, os.Stderr
+	if err := build.Run(); err != nil {
+		return nil, cleanup, fmt.Errorf("build %s: %w", *benchPkg, err)
+	}
+	list := exec.Command(suite.bin, "-test.list", *benchRegex)
+	list.Dir = suite.dir
+	out, err := list.Output()
+	if err != nil {
+		return nil, cleanup, fmt.Errorf("list benchmarks: %w", err)
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.HasPrefix(line, "Benchmark") {
+			suite.names = append(suite.names, strings.TrimSpace(line))
+		}
+	}
+	if len(suite.names) == 0 {
+		return nil, cleanup, fmt.Errorf("no benchmarks match %q", *benchRegex)
+	}
+	return suite, cleanup, nil
+}
+
+// run runs one benchmark against the target at uri and parses its output;
+// when -count > 1 the last run wins.
+func (s *benchSuite) run(name, label, uri string) ([]result, error) {
+	cmd := exec.Command(s.bin,
+		"-test.run", "^$",
+		"-test.bench", "^"+regexp.QuoteMeta(name)+"$",
+		"-test.benchtime", *benchTime,
+		"-test.count", strconv.Itoa(*count),
+		"-test.timeout", testTimeout.String(),
 		"-bench.target-uri", uri,
 		"-bench.target-name", label,
 	)
+	cmd.Dir = s.dir
 
-	fmt.Fprintf(os.Stderr, "==> running benchmarks against %s (%s)\n", label, uri)
+	fmt.Fprintf(os.Stderr, "==> running %s against %s (%s)\n", name, label, uri)
 	var stdout strings.Builder
 	cmd.Stdout = &stdout
 	if *verbose {

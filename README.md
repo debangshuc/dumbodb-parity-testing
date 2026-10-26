@@ -172,7 +172,7 @@ Useful flags (full list in `benchmarks/README.md`):
 | `-dumbodb-image`  | Image to pull and run as DumboDB (default `dolthub/dumbodb:latest`) |
 | `-dumbodb-src`    | Build DumboDB from this source checkout instead of pulling      |
 | `-no-containers`  | Skip container management; assume servers already running       |
-| `-test-timeout`   | `-timeout` for `go test`; raise for the 50K-scale variants      |
+| `-test-timeout`   | `-timeout` for each benchmark run                               |
 
 To run a single benchmark against an already-running server, bypass the
 runner:

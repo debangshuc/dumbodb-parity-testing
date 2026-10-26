@@ -24,25 +24,44 @@ type localServer struct {
 	logPath string
 }
 
-func runLocalTargets(workDir string) (dumbo, mongo []result, err error) {
-	dumbo, dumboErr := runLocalTarget("dumbodb", filepath.Join(workDir, "dumbodb-data"), func(port int, dataDir string) *exec.Cmd {
-		cmd := exec.Command(*dumboBin, "--port", fmt.Sprint(port), "--data-dir", dataDir)
-		cmd.Env = append(os.Environ(), "DUMBODB_NO_METRICS=1")
-		return cmd
-	})
-	mongo, mongoErr := runLocalTarget("mongodb", filepath.Join(workDir, "mongodb-data"), func(port int, dataDir string) *exec.Cmd {
-		return exec.Command(*mongodBin, "--dbpath", dataDir, "--port", fmt.Sprint(port), "--bind_ip", "127.0.0.1")
-	})
-	return dumbo, mongo, errors.Join(dumboErr, mongoErr)
+// runLocalTargets runs each benchmark against a freshly started server of
+// each target, so no benchmark sees state left by another.
+func runLocalTargets(workDir string, suite *benchSuite) (dumbo, mongo []result, err error) {
+	targets := []struct {
+		label   string
+		dataDir string
+		command func(port int, dataDir string) *exec.Cmd
+		results *[]result
+	}{
+		{"dumbodb", filepath.Join(workDir, "dumbodb-data"), func(port int, dataDir string) *exec.Cmd {
+			cmd := exec.Command(*dumboBin, "--port", fmt.Sprint(port), "--data-dir", dataDir)
+			cmd.Env = append(os.Environ(), "DUMBODB_NO_METRICS=1")
+			return cmd
+		}, &dumbo},
+		{"mongodb", filepath.Join(workDir, "mongodb-data"), func(port int, dataDir string) *exec.Cmd {
+			return exec.Command(*mongodBin, "--dbpath", dataDir, "--port", fmt.Sprint(port), "--bind_ip", "127.0.0.1")
+		}, &mongo},
+	}
+	var errs []error
+	for _, name := range suite.names {
+		for _, t := range targets {
+			res, err := runLocalBenchmark(suite, name, t.label, t.dataDir, t.command)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("%s %s: %w", t.label, name, err))
+			}
+			*t.results = append(*t.results, res...)
+		}
+	}
+	return dumbo, mongo, errors.Join(errs...)
 }
 
-func runLocalTarget(label, dataDir string, command func(port int, dataDir string) *exec.Cmd) ([]result, error) {
+func runLocalBenchmark(suite *benchSuite, name, label, dataDir string, command func(port int, dataDir string) *exec.Cmd) ([]result, error) {
 	srv, err := startLocalServer(label, dataDir, command)
 	if err != nil {
 		return nil, err
 	}
 	defer srv.stop()
-	results, err := runBench(label, srv.uri())
+	results, err := suite.run(name, label, srv.uri())
 	if !srv.alive() {
 		err = errors.Join(err, fmt.Errorf("%s exited during the run:\n%s", label, logTail(srv.logPath, 20)))
 	}

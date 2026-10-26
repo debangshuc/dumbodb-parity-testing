@@ -59,11 +59,34 @@ func withEmptyCollection(b *testing.B, label string) (*mongo.Collection, context
 	return col, ctx
 }
 
+// Insert benchmarks delete what they inserted off the clock every so many
+// iterations, so the collection, and with it the cost of an insert, stays the
+// same however long the benchmark runs.
+const (
+	insertResetDocs   = 10000
+	insertOneResetIts = 1000
+)
+
+// clearEvery deletes the documents matching filter, off the clock, when i is
+// a non-zero multiple of every.
+func clearEvery(b *testing.B, ctx context.Context, col *mongo.Collection, i, every int, filter bson.D) {
+	b.Helper()
+	if i == 0 || i%every != 0 {
+		return
+	}
+	b.StopTimer()
+	if _, err := col.DeleteMany(ctx, filter); err != nil {
+		b.Fatalf("clear: %v", err)
+	}
+	b.StartTimer()
+}
+
 func BenchmarkInsertOne(b *testing.B) {
 	col, ctx := withEmptyCollection(b, "insertone")
 	r := rand.New(rand.NewSource(*dataSeed))
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
+		clearEvery(b, ctx, col, i, insertOneResetIts, bson.D{})
 		doc := makeDoc(r, i, benchDocSize)
 		// Use a fresh _id per iteration so inserts never collide.
 		doc[0].Value = fmt.Sprintf("iter-%d", i)
@@ -81,6 +104,7 @@ func benchmarkInsertMany(b *testing.B, batch int) {
 	r := rand.New(rand.NewSource(*dataSeed))
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
+		clearEvery(b, ctx, col, i, insertResetDocs/batch, bson.D{})
 		b.StopTimer()
 		docs := make([]interface{}, batch)
 		for j := 0; j < batch; j++ {
