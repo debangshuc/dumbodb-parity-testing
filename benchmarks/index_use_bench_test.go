@@ -147,7 +147,6 @@ var (
 	coveredProjectionGap = indexUseExpectation{knownDumboGap: "workspace-3u3: covered projections fetch documents"}
 	nullEqualityGap      = indexUseExpectation{knownDumboGap: "workspace-4cp: null equality is not indexed"}
 	existsGap            = indexUseExpectation{knownDumboGap: "workspace-qxg: $exists does not use a sparse index"}
-	regexPrefixGap       = indexUseExpectation{knownDumboGap: "workspace-286: regex prefixes are not indexed"}
 )
 
 type explainSummary struct {
@@ -887,7 +886,7 @@ func BenchmarkIndexUse_RegexPrefix_10K(b *testing.B) {
 	filter := func(i int) bson.D {
 		return bson.D{{Key: "s", Value: primitive.Regex{Pattern: fmt.Sprintf("^s%03d", i%100)}}}
 	}
-	requireIndexUse(b, ctx, col, dumbo, findCmd(col, filter(50), nil, 0), regexPrefixGap)
+	requireIndexUse(b, ctx, col, dumbo, findCmd(col, filter(50), nil, 0), mustUseIndex)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		runFind(b, ctx, col, filter(i), nil, 0)
