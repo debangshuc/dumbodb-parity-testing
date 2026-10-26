@@ -145,7 +145,6 @@ type indexUseExpectation struct {
 var (
 	mustUseIndex         = indexUseExpectation{}
 	coveredProjectionGap = indexUseExpectation{knownDumboGap: "workspace-3u3: covered projections fetch documents"}
-	nullEqualityGap      = indexUseExpectation{knownDumboGap: "workspace-4cp: null equality is not indexed"}
 	existsGap            = indexUseExpectation{knownDumboGap: "workspace-qxg: $exists does not use a sparse index"}
 )
 
@@ -862,7 +861,7 @@ func nullableDoc(i int) bson.D {
 func BenchmarkIndexUse_NullEq_10K(b *testing.B) {
 	col, ctx, dumbo := withIndexUseCollectionIndexed(b, "iu_null_eq", options.Index(), bson.D{{Key: "n", Value: 1}}, nullableDoc)
 	filter := bson.D{{Key: "n", Value: nil}}
-	requireIndexUse(b, ctx, col, dumbo, findCmd(col, filter, nil, 0), nullEqualityGap)
+	requireIndexUse(b, ctx, col, dumbo, findCmd(col, filter, nil, 0), mustUseIndex)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		runFind(b, ctx, col, filter, nil, 0)
