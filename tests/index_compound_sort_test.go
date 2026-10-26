@@ -68,6 +68,10 @@ func TestIndex_CompoundEqualityPrefixSort(t *testing.T) {
 		{"DescIndexAscLimit", descIdx, eq, asc, 5, harness.DumboDBFull},
 		{"AscNoLimit", ascIdx, eq, asc, 0, harness.DumboDBFull},
 		{"SortFieldRange", bson.D{{Key: "k", Value: 1}}, bson.D{{Key: "k", Value: bson.D{{Key: "$gte", Value: int32(100)}, {Key: "$lt", Value: int32(400)}}}}, desc, 5, harness.DumboDBFull},
+		{"SortFieldRangeAsc", bson.D{{Key: "k", Value: 1}}, bson.D{{Key: "k", Value: bson.D{{Key: "$gte", Value: int32(100)}, {Key: "$lt", Value: int32(400)}}}}, asc, 5, harness.DumboDBFull},
+		{"SortFieldGteAsc", bson.D{{Key: "k", Value: 1}}, bson.D{{Key: "k", Value: bson.D{{Key: "$gte", Value: int32(990)}}}}, asc, 5, harness.DumboDBFull},
+		{"SortFieldGteDesc", bson.D{{Key: "k", Value: 1}}, bson.D{{Key: "k", Value: bson.D{{Key: "$gte", Value: int32(10)}}}}, desc, 5, harness.DumboDBFull},
+		{"SortFieldLtDesc", bson.D{{Key: "k", Value: 1}}, bson.D{{Key: "k", Value: bson.D{{Key: "$lt", Value: int32(7)}}}}, desc, 10, harness.DumboDBFull},
 		{"SortFieldIn", bson.D{{Key: "k", Value: 1}}, bson.D{{Key: "k", Value: bson.D{{Key: "$in", Value: bson.A{int32(500), int32(3), int32(70), int32(9)}}}}}, asc, 2, harness.DumboDBFull},
 		// The index keys are sorted before fetching.
 		{"RangePrefixSorts", ascIdx, bson.D{{Key: "grp", Value: bson.D{{Key: "$gte", Value: int32(2)}}}}, asc, 5, harness.DumboDBFull},
@@ -128,7 +132,7 @@ func TestIndex_CompoundEqualityPrefixSortMixed(t *testing.T) {
 		sort   bson.D
 		limit  int64
 	}{
-		{"AscLimit", bson.D{{Key: "grp", Value: int32(1)}}, bson.D{{Key: "k", Value: 1}, {Key: "_id", Value: 1}}, 0},
+		{"AscLimit", bson.D{{Key: "grp", Value: int32(1)}}, bson.D{{Key: "k", Value: 1}}, 30},
 		{"DescLimit", bson.D{{Key: "grp", Value: int32(0)}}, bson.D{{Key: "k", Value: -1}}, 60},
 		{"AscLimitSmall", bson.D{{Key: "grp", Value: int32(0)}}, bson.D{{Key: "k", Value: 1}}, 25},
 		{"ExtraPredicateDesc", bson.D{{Key: "grp", Value: int32(1)}, {Key: "odd", Value: true}}, bson.D{{Key: "k", Value: -1}}, 15},
