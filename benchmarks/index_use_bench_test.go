@@ -145,7 +145,6 @@ type indexUseExpectation struct {
 var (
 	mustUseIndex         = indexUseExpectation{}
 	coveredProjectionGap = indexUseExpectation{knownDumboGap: "workspace-3u3: covered projections fetch documents"}
-	existsGap            = indexUseExpectation{knownDumboGap: "workspace-qxg: $exists does not use a sparse index"}
 )
 
 type explainSummary struct {
@@ -713,8 +712,7 @@ func BenchmarkIndexUse_SparseEq_10K(b *testing.B) {
 func BenchmarkIndexUse_HintedSparse_10K(b *testing.B) {
 	col, ctx, dumbo := withIndexUseCollectionIndexed(b, "iu_sparse_hint", options.Index().SetSparse(true), sparseKey, sparseDoc)
 	filter := bson.D{{Key: "pad", Value: bson.D{{Key: "$exists", Value: true}}}}
-	requireIndexUse(b, ctx, col, dumbo, append(findCmd(col, filter, nil, 0), bson.E{Key: "hint", Value: "idx"}),
-		indexUseExpectation{knownDumboGap: "workspace-vcv: a sparse hint scans the collection"})
+	requireIndexUse(b, ctx, col, dumbo, append(findCmd(col, filter, nil, 0), bson.E{Key: "hint", Value: "idx"}), mustUseIndex)
 	opts := options.Find().SetHint("idx")
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -872,7 +870,7 @@ func BenchmarkIndexUse_NullEq_10K(b *testing.B) {
 func BenchmarkIndexUse_ExistsSparse_10K(b *testing.B) {
 	col, ctx, dumbo := withIndexUseCollectionIndexed(b, "iu_exists_sparse", options.Index().SetSparse(true), sparseKey, sparseDoc)
 	filter := bson.D{{Key: "sp", Value: bson.D{{Key: "$exists", Value: true}}}}
-	requireIndexUse(b, ctx, col, dumbo, findCmd(col, filter, nil, 0), existsGap)
+	requireIndexUse(b, ctx, col, dumbo, findCmd(col, filter, nil, 0), mustUseIndex)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		runFind(b, ctx, col, filter, nil, 0)
